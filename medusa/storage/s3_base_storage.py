@@ -113,6 +113,11 @@ class S3BaseStorage(AbstractStorage):
             logging.debug("Using SSE-C key *****")
             self.sse_c_key = base64.b64decode(config.sse_c_key)
 
+        self.cse_key = None
+        if config.cse_key is not None:
+            logging.debug("Using CSE key *****")
+            self.cse_key = config.cse_key
+
         self.credentials = self._consolidate_credentials(config)
         logging.info('Using credentials {}'.format(self.credentials))
 

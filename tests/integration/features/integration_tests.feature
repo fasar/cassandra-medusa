@@ -78,6 +78,7 @@ Feature: Integration tests
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio-encrypted   | without_client_encryption |
 
     @2
     Scenario Outline: Perform a backup and verify its index

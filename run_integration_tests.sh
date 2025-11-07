@@ -111,6 +111,7 @@ done
 
 export LOCAL_JMX=yes
 export PYTHONWARNINGS="ignore"
+echo "Changing to tests/integration directory..."
 cd tests/integration
 if [ "$LOCAL" == "yes" ]
 then
@@ -126,6 +127,7 @@ then
         STORAGE_TAGS="${STORAGE_TAGS},@s3"
     fi
     # we will also enable the DSE IT if a) we dont have java 11 and b) we dont have minio
+    echo "Checking Java version..."
     java -version 2>&1 | grep version | grep -q 11
     if [ $? -ne 0 ]; then
       # we're NOT having java 11, we can proceed
@@ -187,7 +189,11 @@ fi
 
 if [ "$COVERAGE" == "yes" ]
 then
+    echo "Running tests with coverage..."
+    echo "Command: PYTHONPATH=../.. poetry run coverage run --source='../../medusa' -m behave --stop $SCENARIO --tags=$STORAGE_TAGS $LOGGING $CASSANDRA_VERSION_FLAG"
     PYTHONPATH=../.. poetry run coverage run --source='../../medusa' -m behave --stop $SCENARIO --tags=$STORAGE_TAGS $LOGGING $CASSANDRA_VERSION_FLAG
 else
+    echo "Running tests without coverage..."
+    echo "Command: PYTHONPATH=../.. poetry run behave --stop $SCENARIO --tags=$STORAGE_TAGS $LOGGING $CASSANDRA_VERSION_FLAG"
     PYTHONPATH=../.. poetry run behave --stop $SCENARIO --tags=$STORAGE_TAGS $LOGGING $CASSANDRA_VERSION_FLAG
 fi

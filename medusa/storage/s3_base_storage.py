@@ -34,6 +34,7 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 from medusa.storage.abstract_storage import (
     AbstractStorage, AbstractBlob, AbstractBlobMetadata, ManifestObject, ObjectDoesNotExistError
 )
+from medusa.storage.encryption import EncryptionConfig, EncryptionManager
 
 
 MAX_UP_DOWN_LOAD_RETRIES = 5
@@ -113,10 +114,9 @@ class S3BaseStorage(AbstractStorage):
             logging.debug("Using SSE-C key *****")
             self.sse_c_key = base64.b64decode(config.sse_c_key)
 
-        self.cse_key = None
-        if config.cse_key is not None:
-            logging.debug("Using CSE key *****")
-            self.cse_key = config.cse_key
+        # Setup client-side encryption
+        encryption_config = EncryptionConfig(cse_key=getattr(config, 'cse_key', None))
+        self.encryption_manager = EncryptionManager(encryption_config)
 
         self.credentials = self._consolidate_credentials(config)
         logging.info('Using credentials {}'.format(self.credentials))
@@ -172,6 +172,11 @@ class S3BaseStorage(AbstractStorage):
         try:
             self.s3_client.close()
             self.executor.shutdown()
+            
+            # Clean up encryption resources
+            if self.encryption_manager:
+                self.encryption_manager.cleanup()
+                    
         except Exception as e:
             logging.error('Error disconnecting from S3: {}'.format(e))
 
@@ -295,12 +300,25 @@ class S3BaseStorage(AbstractStorage):
         )
 
         try:
+            # Apply client-side encryption if enabled
+            if self.encryption_manager.is_enabled:
+                data.seek(0)  # Reset stream position
+                encrypted_stream = self.encryption_manager.encrypt_stream(data, object_key, self.storage_provider)
+                # Read all encrypted data into memory for upload
+                encrypted_data = io.BytesIO()
+                for chunk in iter(lambda: encrypted_stream.read(4096), b''):
+                    encrypted_data.write(chunk)
+                encrypted_data.seek(0)
+                upload_data = encrypted_data
+            else:
+                upload_data = data
+                
             # not passing in the transfer config because that is meant to cap a throughput
             # here we are uploading a small-ish file so no need to cap
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
                 Key=object_key,
-                Body=data,
+                Body=upload_data,
                 **extra_args,
             )
         except Exception as e:
@@ -341,13 +359,29 @@ class S3BaseStorage(AbstractStorage):
 
         try:
             Path(file_path).parent.mkdir(parents=True, exist_ok=True)
-            self.s3_client.download_file(
-                Bucket=self.bucket_name,
-                Key=object_key,
-                Filename=file_path,
-                ExtraArgs=extra_args,
-                Config=self.transfer_config,
-            )
+            
+            if self.encryption_manager.is_enabled:
+                # For client-side encryption, we need to download and decrypt manually
+                response = self.s3_client.get_object(
+                    Bucket=self.bucket_name,
+                    Key=object_key,
+                    **extra_args
+                )
+                encrypted_stream = response['Body']
+                decrypted_stream = self.encryption_manager.decrypt_stream(encrypted_stream)
+                
+                with open(file_path, 'wb') as output_file:
+                    for chunk in iter(lambda: decrypted_stream.read(4096), b''):
+                        output_file.write(chunk)
+            else:
+                # Standard download without client-side encryption
+                self.s3_client.download_file(
+                    Bucket=self.bucket_name,
+                    Key=object_key,
+                    Filename=file_path,
+                    ExtraArgs=extra_args,
+                    Config=self.transfer_config,
+                )
         except Exception as e:
             logging.error('Error downloading file from s3://{}/{}: {}'.format(self.bucket_name, object_key, e))
             raise ObjectDoesNotExistError('Object {} does not exist'.format(object_key))
@@ -424,7 +458,29 @@ class S3BaseStorage(AbstractStorage):
         return mo
 
     def __upload_file(self, upload_conf):
-        self.s3_client.upload_file(**upload_conf)
+        if self.encryption_manager.is_enabled:
+            # For client-side encryption, we need to encrypt the file as a stream
+            with open(upload_conf['Filename'], 'rb') as file_stream:
+                encrypted_stream = self.encryption_manager.encrypt_stream(
+                    file_stream, upload_conf['Key'], self.storage_provider
+                )
+                self.s3_client.upload_fileobj(
+                    encrypted_stream,
+                    upload_conf['Bucket'],
+                    upload_conf['Key'],
+                    Config=upload_conf['Config'],
+                    ExtraArgs=upload_conf['ExtraArgs']
+                )
+        else:
+            # Standard upload without client-side encryption using upload_fileobj for consistency
+            with open(upload_conf['Filename'], 'rb') as file_stream:
+                self.s3_client.upload_fileobj(
+                    file_stream,
+                    upload_conf['Bucket'],
+                    upload_conf['Key'],
+                    Config=upload_conf['Config'],
+                    ExtraArgs=upload_conf['ExtraArgs']
+                )
 
         extra_args = {}
         if self.sse_c_key is not None:
@@ -447,7 +503,20 @@ class S3BaseStorage(AbstractStorage):
             extra_args['SSECustomerAlgorithm'] = 'AES256'
             extra_args['SSECustomerKey'] = self.sse_c_key
 
-        return self.s3_client.get_object(Bucket=self.bucket_name, Key=blob.name, **extra_args)['Body'].read()
+        response = self.s3_client.get_object(Bucket=self.bucket_name, Key=blob.name, **extra_args)
+        
+        if self.encryption_manager.is_enabled:
+            # Decrypt the data if client-side encryption is enabled
+            encrypted_stream = response['Body']
+            decrypted_stream = self.encryption_manager.decrypt_stream(encrypted_stream)
+            
+            # Read all decrypted data into bytes
+            decrypted_data = b''
+            for chunk in iter(lambda: decrypted_stream.read(4096), b''):
+                decrypted_data += chunk
+            return decrypted_data
+        else:
+            return response['Body'].read()
 
     @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5000))
     async def _delete_object(self, obj: AbstractBlob):

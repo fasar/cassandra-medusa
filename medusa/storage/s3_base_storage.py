@@ -296,27 +296,13 @@ class S3BaseStorage(AbstractStorage):
         )
 
         try:
-            # Apply client-side encryption if enabled
-            if self.encryption_manager.is_enabled:
-                data.seek(0)  # Reset stream position
-                encrypted_stream = self.encryption_manager.encrypt_stream(data, object_key, self.storage_provider)
-                # Read all encrypted data into memory for upload
-                encrypted_data = io.BytesIO()
-                for chunk in iter(lambda: encrypted_stream.read(4096), b''):
-                    encrypted_data.write(chunk)
-                encrypted_data.seek(0)
-                upload_data = encrypted_data
-            else:
-                upload_data = data
-                
-            # not passing in the transfer config because that is meant to cap a throughput
-            # here we are uploading a small-ish file so no need to cap
-            self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=object_key,
-                Body=upload_data,
-                **extra_args,
-            )
+            with self.encryption_manager.encrypt_stream(data, object_key, self.storage_provider) as encrypted_stream:
+                self.s3_client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=object_key,
+                    Body=encrypted_stream,
+                    **extra_args,
+                )
         except Exception as e:
             logging.error(e)
             raise e
@@ -365,10 +351,13 @@ class S3BaseStorage(AbstractStorage):
                 )
                 encrypted_stream = response['Body']
                 decrypted_stream = self.encryption_manager.decrypt_stream(encrypted_stream)
-                
-                with open(file_path, 'wb') as output_file:
-                    for chunk in iter(lambda: decrypted_stream.read(4096), b''):
-                        output_file.write(chunk)
+                try:
+                    with open(file_path, 'wb') as output_file:
+                        for chunk in iter(lambda: decrypted_stream.read(16*1024), b''):
+                            output_file.write(chunk)
+                finally:
+                    decrypted_stream.close()
+                    encrypted_stream.close()
             else:
                 # Standard download without client-side encryption
                 self.s3_client.download_file(
@@ -457,18 +446,19 @@ class S3BaseStorage(AbstractStorage):
         if self.encryption_manager.is_enabled:
             # For client-side encryption, we need to encrypt the file as a stream
             with open(upload_conf['Filename'], 'rb') as file_stream:
-                encrypted_stream = self.encryption_manager.encrypt_stream(
+                with self.encryption_manager.encrypt_stream(
                     file_stream, upload_conf['Key'], self.storage_provider
-                )
-                self.s3_client.upload_fileobj(
-                    encrypted_stream,
-                    upload_conf['Bucket'],
-                    upload_conf['Key'],
-                    Config=upload_conf['Config'],
-                    ExtraArgs=upload_conf['ExtraArgs']
-                )
+                ) as encrypted_stream:
+                    self.s3_client.upload_fileobj(
+                        encrypted_stream,
+                        upload_conf['Bucket'],
+                        upload_conf['Key'],
+                        Config=upload_conf['Config'],
+                        ExtraArgs=upload_conf['ExtraArgs']
+                    )
         else:
-            # Standard upload without client-side encryption using upload_fileobj for consistency
+            # Standard upload without client-side encryption using upload_fileobj.
+            # This allows to use AWS optimisations.
             with open(upload_conf['Filename'], 'rb') as file_stream:
                 self.s3_client.upload_fileobj(
                     file_stream,
@@ -505,11 +495,14 @@ class S3BaseStorage(AbstractStorage):
             # Decrypt the data if client-side encryption is enabled
             encrypted_stream = response['Body']
             decrypted_stream = self.encryption_manager.decrypt_stream(encrypted_stream)
-            
-            # Read all decrypted data into bytes
-            decrypted_data = b''
-            for chunk in iter(lambda: decrypted_stream.read(4096), b''):
-                decrypted_data += chunk
+            try:
+                # Read all decrypted data into bytes
+                decrypted_data = b''
+                for chunk in iter(lambda: decrypted_stream.read(4096), b''):
+                    decrypted_data += chunk
+            finally:
+                decrypted_stream.close()
+                encrypted_stream.close()
             return decrypted_data
         else:
             return response['Body'].read()

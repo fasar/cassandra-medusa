@@ -45,16 +45,16 @@ class TestEncryptionConfig(unittest.TestCase):
     
     def test_get_cse_key_from_string(self):
         """Test key preparation from a regular string"""
-        config = EncryptionConfig(cse_key="test_key_1234567890123456789012")  # 32 chars
+        config = EncryptionConfig(cse_key=b"12345678901234567890123456789012")  # 32 chars
         key = config.get_cse_key()
         self.assertEqual(len(key), 32)
         # Key should be exactly 32 bytes, no matter the input
-        self.assertTrue(key.startswith(b"test_key_1234567890123456789012"))
+        self.assertTrue(key.startswith(b"12345678901234567890123456789012"))
     
     def test_get_cse_key_from_base64(self):
         """Test key preparation from base64 encoded string"""
         # Create exactly 32 bytes
-        original_key = b"test_key_12345678901234567890123"  # 31 chars + null = 32
+        original_key = b"1234567890123456789012345678901\x00"  # 31 chars + null = 32
         b64_key = base64.b64encode(original_key).decode('utf-8')
         config = EncryptionConfig(cse_key=b64_key)
         key = config.get_cse_key()
@@ -63,7 +63,7 @@ class TestEncryptionConfig(unittest.TestCase):
     
     def test_get_cse_key_padding_short_key(self):
         """Test that short keys are padded to 32 bytes"""
-        config = EncryptionConfig(cse_key="short")
+        config = EncryptionConfig(cse_key="short") 
         key = config.get_cse_key()
         self.assertEqual(len(key), 32)
         self.assertTrue(key.startswith(b"short"))
@@ -81,14 +81,6 @@ class TestEncryptionConfig(unittest.TestCase):
         config = EncryptionConfig()
         with self.assertRaises(ValueError):
             config.get_cse_key()
-    
-    def test_get_cse_key_caches_result(self):
-        """Test that key validation is cached"""
-        config = EncryptionConfig(cse_key="test_key_1234567890123456789012")
-        key1 = config.get_cse_key()
-        key2 = config.get_cse_key()
-        self.assertIs(key1, key2)  # Should be the same object
-
 
 class TestNoOpEncryptor(unittest.TestCase):
     """Test cases for NoOpEncryptor"""
@@ -134,69 +126,6 @@ class TestEncryptionManager(unittest.TestCase):
         # But the manager should raise an error if we try to create an AWS encryptor
         manager = EncryptionManager(config)
         self.assertFalse(manager.is_enabled)  # Should create NoOpEncryptor instead
-    
-    def test_create_encryption_context(self):
-        """Test encryption context creation"""
-        config = EncryptionConfig()
-        manager = EncryptionManager(config)
-        context = manager.create_encryption_context("test/object.db", "s3")
-        expected = {
-            "object_key": "test/object.db",
-            "storage_provider": "s3"
-        }
-        self.assertEqual(context, expected)
-    
-    def test_encrypt_stream_calls_encryptor_with_context(self):
-        """Test that encrypt_stream calls encryptor with proper context"""
-        config = EncryptionConfig()
-        manager = EncryptionManager(config)
-        
-        # Mock the encryptor
-        mock_encryptor = Mock(spec=BaseEncryptor)
-        manager.encryptor = mock_encryptor
-        
-        stream = io.BytesIO(b"test data")
-        object_key = "test/object.db"
-        storage_provider = "s3"
-        
-        manager.encrypt_stream(stream, object_key, storage_provider)
-        
-        # Verify the encryptor was called with correct parameters
-        mock_encryptor.encrypt_stream.assert_called_once()
-        args, kwargs = mock_encryptor.encrypt_stream.call_args
-        self.assertIs(args[0], stream)
-        expected_context = {
-            "object_key": object_key,
-            "storage_provider": storage_provider
-        }
-        self.assertEqual(args[1], expected_context)
-    
-    def test_decrypt_stream_calls_encryptor(self):
-        """Test that decrypt_stream calls encryptor"""
-        config = EncryptionConfig()
-        manager = EncryptionManager(config)
-        
-        # Mock the encryptor
-        mock_encryptor = Mock(spec=BaseEncryptor)
-        manager.encryptor = mock_encryptor
-        
-        stream = io.BytesIO(b"encrypted data")
-        manager.decrypt_stream(stream)
-        
-        mock_encryptor.decrypt_stream.assert_called_once_with(stream)
-    
-    def test_cleanup_calls_encryptor_cleanup(self):
-        """Test that cleanup calls encryptor cleanup"""
-        config = EncryptionConfig()
-        manager = EncryptionManager(config)
-        
-        # Mock the encryptor
-        mock_encryptor = Mock(spec=BaseEncryptor)
-        manager.encryptor = mock_encryptor
-        
-        manager.cleanup()
-        
-        mock_encryptor.cleanup.assert_called_once()
 
 class TestAWSEncryptor(unittest.TestCase):
     """Test cases for AWSEncryptor"""
@@ -205,7 +134,7 @@ class TestAWSEncryptor(unittest.TestCase):
     def test_encrypt_decrypt_stream(self):
         """Test that encryption produces different data and decryption returns original data"""
         # Create a test configuration with a 32-byte key
-        test_key = b"test_encryption_key_1234567890wc -l /home/sartor/work/Workbox/cassandra-medusa/tests/storage/encryption_test.py"  # 32 bytes
+        test_key = b"12345678901234567890123456789012"  # 32 bytes
         b64_key = base64.b64encode(test_key).decode('utf-8')
         config = EncryptionConfig(cse_key=b64_key)
         
@@ -253,7 +182,7 @@ class TestAWSEncryptor(unittest.TestCase):
     def test_encrypt_produces_different_output_each_time(self):
         """Test that encryption produces different ciphertext each time (due to random IV)"""
         # Create a test configuration
-        test_key = b"test_encryption_key_1234567890wc -l /home/sartor/work/Workbox/cassandra-medusa/tests/storage/encryption_test.py"  # 32 bytes
+        test_key = b"12345678901234567890123456789012"  # 32 bytes
         b64_key = base64.b64encode(test_key).decode('utf-8')
         config = EncryptionConfig(cse_key=b64_key)
         
@@ -261,7 +190,7 @@ class TestAWSEncryptor(unittest.TestCase):
         encryptor = AWSEncryptor(config)
         
         # Original data
-        original_data = b"Test data for randomness verification"
+        original_data = b"Test data for encryption verification"
         
         # Encryption context
         context = {

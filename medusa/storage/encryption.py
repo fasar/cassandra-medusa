@@ -207,7 +207,11 @@ class EncryptionManager:
         return self.config.is_enabled
     
     def create_encryption_context(self, object_key: str, storage_provider: str) -> t.Dict[str, str]:
-        """Create encryption context for the given object"""
+        """
+        Create encryption context for the given object.
+        The context includes metadata about the object being encrypted.
+        Context is not encrypted.
+        """
         return {
             "object_key": object_key,
             "storage_provider": storage_provider

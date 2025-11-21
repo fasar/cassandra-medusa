@@ -42,50 +42,50 @@ class TestEncryptionConfig(unittest.TestCase):
         config = EncryptionConfig(cse_key="test_key")
         self.assertFalse(config.is_enabled)
     
-    def test_validate_and_prepare_key_from_string(self):
+    def test_get_cse_key_from_string(self):
         """Test key preparation from a regular string"""
         config = EncryptionConfig(cse_key="test_key_1234567890123456789012")  # 32 chars
-        key = config.validate_and_prepare_key()
+        key = config.get_cse_key()
         self.assertEqual(len(key), 32)
         # Key should be exactly 32 bytes, no matter the input
         self.assertTrue(key.startswith(b"test_key_1234567890123456789012"))
     
-    def test_validate_and_prepare_key_from_base64(self):
+    def test_get_cse_key_from_base64(self):
         """Test key preparation from base64 encoded string"""
         # Create exactly 32 bytes
         original_key = b"test_key_12345678901234567890123"  # 31 chars + null = 32
         b64_key = base64.b64encode(original_key).decode('utf-8')
         config = EncryptionConfig(cse_key=b64_key)
-        key = config.validate_and_prepare_key()
+        key = config.get_cse_key()
         self.assertEqual(len(key), 32)
         self.assertEqual(key, original_key)
     
-    def test_validate_and_prepare_key_padding_short_key(self):
+    def test_get_cse_key_padding_short_key(self):
         """Test that short keys are padded to 32 bytes"""
         config = EncryptionConfig(cse_key="short")
-        key = config.validate_and_prepare_key()
+        key = config.get_cse_key()
         self.assertEqual(len(key), 32)
         self.assertTrue(key.startswith(b"short"))
     
-    def test_validate_and_prepare_key_truncating_long_key(self):
+    def test_get_cse_key_truncating_long_key(self):
         """Test that long keys are truncated to 32 bytes"""
         long_key = "a" * 50  # 50 chars
         config = EncryptionConfig(cse_key=long_key)
-        key = config.validate_and_prepare_key()
+        key = config.get_cse_key()
         self.assertEqual(len(key), 32)
         self.assertEqual(key, b"a" * 32)
     
-    def test_validate_and_prepare_key_no_key_raises_error(self):
+    def test_get_cse_key_no_key_raises_error(self):
         """Test that validation raises error when no key is provided"""
         config = EncryptionConfig()
         with self.assertRaises(ValueError):
-            config.validate_and_prepare_key()
+            config.get_cse_key()
     
-    def test_validate_and_prepare_key_caches_result(self):
+    def test_get_cse_key_caches_result(self):
         """Test that key validation is cached"""
         config = EncryptionConfig(cse_key="test_key_1234567890123456789012")
-        key1 = config.validate_and_prepare_key()
-        key2 = config.validate_and_prepare_key()
+        key1 = config.get_cse_key()
+        key2 = config.get_cse_key()
         self.assertIs(key1, key2)  # Should be the same object
 
 

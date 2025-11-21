@@ -37,18 +37,25 @@ class EncryptionConfig:
         self.cse_key = cse_key
         self.key_namespace = key_namespace
         self.key_name = key_name
-        self._validated_key = None
+        if(self.is_enabled):
+            self._validated_cse_key = self._prepare_cse_key()
+        else:
+            self._validated_cse_key = None
         
     @property
     def is_enabled(self) -> bool:
         """Check if encryption is enabled and available"""
         return self.cse_key is not None and AWS_ENCRYPTION_SDK_AVAILABLE
     
-    def validate_and_prepare_key(self) -> bytes:
-        """Validate and prepare the CSE key for use"""
-        if self._validated_key is not None:
-            return self._validated_key
-            
+    def get_cse_key(self) -> bytes:
+        """get CSE key for use"""
+        if self._validated_cse_key == None:
+            raise ValueError("CSE key is required for encryption")
+        
+        return self._validated_cse_key
+        
+    def _prepare_cse_key(self) -> bytes:
+        """Validate and prepare the CSE key for use"""            
         if not self.cse_key:
             raise ValueError("CSE key is required for encryption")
             
@@ -71,8 +78,8 @@ class EncryptionConfig:
             else:
                 cse_key_bytes = cse_key_bytes[:32]
                 
-        self._validated_key = cse_key_bytes
-        return self._validated_key
+        self._validated_cse_key = cse_key_bytes
+        return self._validated_cse_key
 
 
 class BaseEncryptor(ABC):
@@ -128,7 +135,7 @@ class AWSEncryptor(BaseEncryptor):
             )
 
             # Get validated key
-            cse_key_bytes = self.config.validate_and_prepare_key()
+            cse_key_bytes = self.config.get_cse_key()
 
             # Create a Raw AES keyring for encryption/decryption
             mat_prov = AwsCryptographicMaterialProviders(config=MaterialProvidersConfig())

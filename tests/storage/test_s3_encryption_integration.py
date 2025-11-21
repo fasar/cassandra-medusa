@@ -164,7 +164,6 @@ class TestS3BaseStorageWithEncryption(unittest.TestCase):
         try:
             # Simulate the sync part of the upload
             if storage.encryption_manager.is_enabled:
-                data.seek(0)
                 encrypted_stream = storage.encryption_manager.encrypt_stream(
                     data, object_key, storage.storage_provider
                 )

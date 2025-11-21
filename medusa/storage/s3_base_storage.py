@@ -297,11 +297,12 @@ class S3BaseStorage(AbstractStorage):
 
         try:
             with self.encryption_manager.encrypt_stream(data, object_key, self.storage_provider) as encrypted_stream:
-                self.s3_client.put_object(
-                    Bucket=self.bucket_name,
-                    Key=object_key,
-                    Body=encrypted_stream,
-                    **extra_args,
+                self.s3_client.upload_fileobj(
+                    encrypted_stream,
+                    self.bucket_name,
+                    object_key,
+                    Config=self.transfer_config,
+                    ExtraArgs=extra_args,
                 )
         except Exception as e:
             logging.error(e)

@@ -18,7 +18,8 @@ import unittest
 from unittest.mock import Mock, patch, MagicMock
 
 from medusa.storage.encryption import (
-    EncryptionConfig, EncryptionManager, NoOpEncryptor, BaseEncryptor
+    EncryptionConfig, EncryptionManager, NoOpEncryptor, BaseEncryptor, AWSEncryptor,
+    AWS_ENCRYPTION_SDK_AVAILABLE
 )
 
 
@@ -197,7 +198,96 @@ class TestEncryptionManager(unittest.TestCase):
         
         mock_encryptor.cleanup.assert_called_once()
 
-
+class TestAWSEncryptor(unittest.TestCase):
+    """Test cases for AWSEncryptor"""
+    
+    @unittest.skipIf(not AWS_ENCRYPTION_SDK_AVAILABLE, "AWS Encryption SDK not available")
+    def test_encrypt_decrypt_stream(self):
+        """Test that encryption produces different data and decryption returns original data"""
+        # Create a test configuration with a 32-byte key
+        test_key = b"test_encryption_key_1234567890wc -l /home/sartor/work/Workbox/cassandra-medusa/tests/storage/encryption_test.py"  # 32 bytes
+        b64_key = base64.b64encode(test_key).decode('utf-8')
+        config = EncryptionConfig(cse_key=b64_key)
+        
+        # Create AWSEncryptor instance
+        encryptor = AWSEncryptor(config)
+        
+        # Original data
+        original_data = b"This is a test data stream for encryption and decryption testing."
+        
+        # Create source stream from bytes
+        source_stream = io.BytesIO(original_data)
+        
+        # Create encryption context
+        context = {
+            "object_key": "test/object.db",
+            "storage_provider": "s3"
+        }
+        
+        # Encrypt the stream
+        encrypted_stream = encryptor.encrypt_stream(source_stream, context)
+        
+        # Read encrypted data
+        encrypted_data = encrypted_stream.read()
+        
+        # Verify that encrypted data is different from original data
+        self.assertNotEqual(encrypted_data, original_data)
+        self.assertGreater(len(encrypted_data), 0)
+        
+        # Create a new stream from encrypted data for decryption
+        encrypted_stream_for_decrypt = io.BytesIO(encrypted_data)
+        
+        # Decrypt the stream
+        decrypted_stream = encryptor.decrypt_stream(encrypted_stream_for_decrypt)
+        
+        # Read decrypted data
+        decrypted_data = decrypted_stream.read()
+        
+        # Verify that decrypted data matches original data
+        self.assertEqual(decrypted_data, original_data)
+        
+        # Cleanup
+        encryptor.cleanup()
+    
+    @unittest.skipIf(not AWS_ENCRYPTION_SDK_AVAILABLE, "AWS Encryption SDK not available")
+    def test_encrypt_produces_different_output_each_time(self):
+        """Test that encryption produces different ciphertext each time (due to random IV)"""
+        # Create a test configuration
+        test_key = b"test_encryption_key_1234567890wc -l /home/sartor/work/Workbox/cassandra-medusa/tests/storage/encryption_test.py"  # 32 bytes
+        b64_key = base64.b64encode(test_key).decode('utf-8')
+        config = EncryptionConfig(cse_key=b64_key)
+        
+        # Create AWSEncryptor instance
+        encryptor = AWSEncryptor(config)
+        
+        # Original data
+        original_data = b"Test data for randomness verification"
+        
+        # Encryption context
+        context = {
+            "object_key": "test/object.db",
+            "storage_provider": "s3"
+        }
+        
+        # Encrypt the same data twice
+        encrypted_stream1 = encryptor.encrypt_stream(io.BytesIO(original_data), context)
+        encrypted_data1 = encrypted_stream1.read()
+        
+        encrypted_stream2 = encryptor.encrypt_stream(io.BytesIO(original_data), context)
+        encrypted_data2 = encrypted_stream2.read()
+        
+        # Verify that both encryptions produce different ciphertext
+        self.assertNotEqual(encrypted_data1, encrypted_data2)
+        
+        # But both should decrypt to the same original data
+        decrypted_data1 = encryptor.decrypt_stream(io.BytesIO(encrypted_data1)).read()
+        decrypted_data2 = encryptor.decrypt_stream(io.BytesIO(encrypted_data2)).read()
+        
+        self.assertEqual(decrypted_data1, original_data)
+        self.assertEqual(decrypted_data2, original_data)
+        
+        # Cleanup
+        encryptor.cleanup()
 
 
 if __name__ == '__main__':

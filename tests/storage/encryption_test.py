@@ -99,11 +99,6 @@ class TestNoOpEncryptor(unittest.TestCase):
         stream = io.BytesIO(b"test data")
         result = encryptor.decrypt_stream(stream)
         self.assertIs(result, stream)
-    
-    def test_cleanup_does_nothing(self):
-        """Test that cleanup does nothing and doesn't raise errors"""
-        encryptor = NoOpEncryptor()
-        encryptor.cleanup()  # Should not raise any exception
 
 
 class TestEncryptionManager(unittest.TestCase):
@@ -174,9 +169,6 @@ class TestAWSEncryptor(unittest.TestCase):
         
         # Verify that decrypted data matches original data
         self.assertEqual(decrypted_data, original_data)
-        
-        # Cleanup
-        encryptor.cleanup()
     
     @unittest.skipIf(not AWS_ENCRYPTION_SDK_AVAILABLE, "AWS Encryption SDK not available")
     def test_encrypt_produces_different_output_each_time(self):
@@ -214,9 +206,6 @@ class TestAWSEncryptor(unittest.TestCase):
         
         self.assertEqual(decrypted_data1, original_data)
         self.assertEqual(decrypted_data2, original_data)
-        
-        # Cleanup
-        encryptor.cleanup()
 
 
 if __name__ == '__main__':

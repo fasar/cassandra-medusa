@@ -172,11 +172,7 @@ class S3BaseStorage(AbstractStorage):
         try:
             self.s3_client.close()
             self.executor.shutdown()
-            
-            # Clean up encryption resources
-            if self.encryption_manager:
-                self.encryption_manager.cleanup()
-                    
+
         except Exception as e:
             logging.error('Error disconnecting from S3: {}'.format(e))
 

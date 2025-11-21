@@ -94,12 +94,6 @@ class BaseEncryptor(ABC):
     def decrypt_stream(self, encrypted_stream: io.IOBase) -> io.IOBase:
         """Decrypt a stream"""
         pass
-    
-    @abstractmethod
-    def cleanup(self) -> None:
-        """Clean up resources"""
-        pass
-
 
 class NoOpEncryptor(BaseEncryptor):
     """No-operation encryptor that does nothing (for when encryption is disabled)"""
@@ -109,9 +103,6 @@ class NoOpEncryptor(BaseEncryptor):
     
     def decrypt_stream(self, encrypted_stream: io.IOBase) -> io.IOBase:
         return encrypted_stream
-    
-    def cleanup(self) -> None:
-        pass
 
 
 class AWSEncryptor(BaseEncryptor):
@@ -168,16 +159,7 @@ class AWSEncryptor(BaseEncryptor):
             source=encrypted_stream,
             keyring=self.raw_aes_keyring
         )
-    
-    def cleanup(self) -> None:
-        """Clean up AWS encryption resources"""
-        try:
-            # The encryption client doesn't need explicit cleanup,
-            # but we can reset the references
-            self.encryption_client = None
-            self.raw_aes_keyring = None
-        except Exception as e:
-            logging.warning(f'Error cleaning up AWS encryption client: {e}')
+
 
 
 class EncryptionManager:
@@ -225,8 +207,3 @@ class EncryptionManager:
     def decrypt_stream(self, encrypted_stream: io.IOBase) -> io.IOBase:
         """Decrypt a stream using the configured encryptor"""
         return self.encryptor.decrypt_stream(encrypted_stream)
-    
-    def cleanup(self) -> None:
-        """Clean up encryption resources"""
-        if self.encryptor:
-            self.encryptor.cleanup()

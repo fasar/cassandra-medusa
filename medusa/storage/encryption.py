@@ -202,7 +202,6 @@ class EncryptionManager:
     def create_encryption_context(self, object_key: str, storage_provider: str) -> t.Dict[str, str]:
         """Create encryption context for the given object"""
         return {
-            "medusa": "backup",
             "object_key": object_key,
             "storage_provider": storage_provider
         }

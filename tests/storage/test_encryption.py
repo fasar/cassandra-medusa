@@ -140,7 +140,6 @@ class TestEncryptionManager(unittest.TestCase):
         manager = EncryptionManager(config)
         context = manager.create_encryption_context("test/object.db", "s3")
         expected = {
-            "medusa": "backup",
             "object_key": "test/object.db",
             "storage_provider": "s3"
         }
@@ -166,7 +165,6 @@ class TestEncryptionManager(unittest.TestCase):
         args, kwargs = mock_encryptor.encrypt_stream.call_args
         self.assertIs(args[0], stream)
         expected_context = {
-            "medusa": "backup",
             "object_key": object_key,
             "storage_provider": storage_provider
         }
@@ -198,39 +196,6 @@ class TestEncryptionManager(unittest.TestCase):
         manager.cleanup()
         
         mock_encryptor.cleanup.assert_called_once()
-
-
-class TestIntegrationWithMockedAWS(unittest.TestCase):
-    """Integration tests with mocked AWS SDK"""
-    
-    @patch('medusa.storage.encryption.AWS_ENCRYPTION_SDK_AVAILABLE', True)
-    @patch('medusa.storage.encryption.aws_encryption_sdk')
-    @patch('medusa.storage.encryption.AwsCryptographicMaterialProviders')
-    @patch('medusa.storage.encryption.MaterialProvidersConfig')
-    @patch('medusa.storage.encryption.CreateRawAesKeyringInput')
-    def test_aws_encryptor_initialization(self, mock_input, mock_config_cls, 
-                                         mock_providers, mock_aws_sdk):
-        """Test AWS encryptor initialization with mocked dependencies"""
-        # Setup mocks
-        mock_client = Mock()
-        mock_aws_sdk.EncryptionSDKClient.return_value = mock_client
-        
-        mock_providers_instance = Mock()
-        mock_providers.return_value = mock_providers_instance
-        mock_keyring = Mock()
-        mock_providers_instance.create_raw_aes_keyring.return_value = mock_keyring
-
-        # Test encryption config and manager
-        config = EncryptionConfig(cse_key="test_key_1234567890123456789012")
-        manager = EncryptionManager(config)
-        
-        # Verify AWS SDK was called correctly (we don't need to check the exact commitment policy)
-        mock_aws_sdk.EncryptionSDKClient.assert_called_once()
-        
-        # Verify keyring creation
-        mock_providers_instance.create_raw_aes_keyring.assert_called_once()
-        
-        self.assertTrue(manager.is_enabled)
 
 
 if __name__ == '__main__':

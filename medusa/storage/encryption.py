@@ -17,6 +17,7 @@ import base64
 import hashlib
 import struct
 import logging
+import os
 from cryptography.fernet import Fernet
 
 # Chunk size for reading/encrypting.
@@ -81,12 +82,21 @@ class EncryptionManager:
 
                 # Sanity check for chunk length to detect non-encrypted files or corruption early
                 if chunk_len > MAX_CHUNK_SIZE:
-                    raise IOError(f"Corrupted encrypted file or plaintext file detected: chunk length {chunk_len} exceeds max {MAX_CHUNK_SIZE}")
+                    file_size = os.path.getsize(src_path)
+                    header_hex = len_bytes.hex()
+                    raise IOError(
+                        f"Corrupted encrypted file or plaintext file detected: {src_path} "
+                        f"(size: {file_size}). Chunk length {chunk_len} exceeds max {MAX_CHUNK_SIZE}. "
+                        f"Header bytes: {header_hex}"
+                    )
 
                 encrypted_chunk = f_in.read(chunk_len)
 
                 if len(encrypted_chunk) != chunk_len:
-                    raise IOError(f"Corrupted encrypted file: expected {chunk_len} bytes, got {len(encrypted_chunk)}")
+                    raise IOError(
+                        f"Corrupted encrypted file: {src_path}. "
+                        f"Expected {chunk_len} bytes, got {len(encrypted_chunk)}"
+                    )
 
                 decrypted_chunk = self.fernet.decrypt(encrypted_chunk)
                 f_out.write(decrypted_chunk)

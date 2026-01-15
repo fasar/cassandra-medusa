@@ -14,11 +14,13 @@
 # limitations under the License.
 
 import itertools
+import json
 import logging
 import operator
 import pathlib
 import re
 import typing as t
+import collections
 
 
 from tenacity import retry
@@ -509,5 +511,47 @@ class Storage(object):
             files_by_keyspace_and_table[ks] = dict()
             for tt, t_files in itertools.groupby(ks_files, lambda tf: tf[1]):
                 files_by_keyspace_and_table[ks][tt] = {pathlib.Path(tf[2].path).name: tf[2] for tf in t_files}
+
+        return files_by_keyspace_and_table
+
+    def get_files_from_all_manifests(self) -> t.Dict[str, t.Dict[str, t.Dict[str, ManifestObject]]]:
+        files_by_keyspace_and_table = collections.defaultdict(lambda: collections.defaultdict(dict))
+
+        # List all backups
+        backups = list(self.list_node_backups(fqdn=self.config.fqdn))
+
+        for backup in backups:
+            try:
+                manifest_str = backup.manifest
+                if not manifest_str:
+                    continue
+                manifest_data = json.loads(manifest_str)
+
+                for section in manifest_data:
+                    for obj in section['objects']:
+                        path = obj['path']
+                        size = obj['size']
+                        md5 = obj['MD5']
+                        source_size = obj.get('source_size')
+                        source_md5 = obj.get('source_MD5')
+
+                        p = pathlib.Path(path)
+                        # Filename from path
+                        filename = p.name
+
+                        # Construct ManifestObject
+                        mo = ManifestObject(path, size, md5, source_size, source_md5)
+
+                        # Derive keyspace and table using the same logic as list_files_per_table
+                        try:
+                            ks, table = Storage.sanitize_keyspace_and_table_name(p)
+                            files_by_keyspace_and_table[ks][table][filename] = mo
+                        except RuntimeError:
+                            # Skip files that don't match SSTable path structure (e.g. if path is weird)
+                            logging.debug(f"Skipping {path} from manifest as it doesn't look like an SSTable")
+                            pass
+
+            except Exception as e:
+                logging.warning(f"Failed to process manifest for backup {backup.name}: {e}")
 
         return files_by_keyspace_and_table

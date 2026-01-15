@@ -22,6 +22,8 @@ import hashlib
 import io
 import logging
 import pathlib
+import tempfile
+import os
 import typing as t
 
 from pathlib import Path
@@ -40,7 +42,11 @@ AbstractBlob = collections.namedtuple('AbstractBlob', ['name', 'size', 'hash', '
 AbstractBlobMetadata = collections.namedtuple('AbstractBlobMetadata',
                                               ['name', 'sse_enabled', 'sse_key_id', 'sse_customer_key_md5'])
 
-ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5'])
+ManifestObject = collections.namedtuple(
+    'ManifestObject',
+    ['path', 'size', 'MD5', 'source_size', 'source_MD5'],
+    defaults=[None, None]
+)
 
 
 class ObjectDoesNotExistError(Exception):
@@ -147,8 +153,46 @@ class AbstractStorage(abc.ABC):
         :param dest: the path where to download the objects locally
         :return:
         """
+        if hasattr(self.config, 'key_secret_base64') and self.config.key_secret_base64:
+            return self._download_encrypted_blobs(srcs, dest)
+
         loop = self.get_or_create_event_loop()
         loop.run_until_complete(self._download_blobs(srcs, dest))
+
+    def _download_encrypted_blobs(self, srcs, dest):
+        from medusa.storage.encryption import EncryptionManager
+
+        manager = EncryptionManager(self.config.key_secret_base64)
+        loop = self.get_or_create_event_loop()
+
+        chunk_size = int(self.config.concurrent_transfers)
+        srcs = [str(s) for s in srcs]
+        chunks = [srcs[i:i + chunk_size] for i in range(0, len(srcs), chunk_size)]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for chunk in chunks:
+                # Download chunk to temp_dir
+                loop.run_until_complete(self._download_blobs(chunk, temp_dir))
+
+                # Decrypt
+                for src in chunk:
+                    src_path = Path(src)
+                    # Use the same logic as storage driver to find where it landed
+                    temp_file_path = Path(AbstractStorage.path_maybe_with_parent(temp_dir, src_path))
+                    final_file_path = Path(AbstractStorage.path_maybe_with_parent(dest, src_path))
+
+                    # Ensure dest dir exists
+                    final_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    if temp_file_path.exists():
+                        manager.decrypt_file(temp_file_path, final_file_path)
+                        # remove temp file immediately
+                        try:
+                            os.remove(temp_file_path)
+                        except OSError:
+                            pass
+                    else:
+                        logging.warning("Encrypted file not found after download: {}".format(temp_file_path))
 
     async def _download_blobs(self, srcs: t.List[t.Union[Path, str]], dest: t.Union[Path, str]):
         chunk_size = int(self.config.concurrent_transfers)
@@ -169,8 +213,61 @@ class AbstractStorage(abc.ABC):
         :param dest: the location where to upload the files in the target bucket (doesn't contain the filename)
         :return: a list of ManifestObject describing all the uploaded files
         """
+        if hasattr(self.config, 'key_secret_base64') and self.config.key_secret_base64:
+            return self._upload_encrypted_blobs(srcs, dest)
+
         loop = self.get_or_create_event_loop()
         manifest_objects = loop.run_until_complete(self._upload_blobs(srcs, dest))
+        return manifest_objects
+
+    def _upload_encrypted_blobs(self, srcs, dest):
+        from medusa.storage.encryption import EncryptionManager
+
+        manager = EncryptionManager(self.config.key_secret_base64)
+        loop = self.get_or_create_event_loop()
+        manifest_objects = []
+        chunk_size = int(self.config.concurrent_transfers)
+
+        srcs = [str(s) for s in srcs]
+
+        # Split into chunks
+        src_chunks = [srcs[i:i + chunk_size] for i in range(0, len(srcs), chunk_size)]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for chunk in src_chunks:
+                # Prepare this chunk
+                temp_files = []
+                metadata_map = {}  # path -> (source_md5, source_size)
+
+                for src in chunk:
+                    src_path = Path(src)
+                    temp_path = Path(temp_dir) / src_path.name
+
+                    enc_md5, enc_size, src_md5, src_size = manager.encrypt_file(src, temp_path)
+
+                    temp_files.append(str(temp_path))
+                    metadata_map[str(temp_path)] = (src_md5, src_size)
+
+                # Upload this chunk
+                chunk_results = loop.run_until_complete(self._upload_blobs(temp_files, dest))
+
+                # Process results
+                for i, mo in enumerate(chunk_results):
+                    # corresponding temp file
+                    temp_file = temp_files[i]
+                    src_md5, src_size = metadata_map[temp_file]
+
+                    # Create new ManifestObject.
+                    new_mo = ManifestObject(mo.path, mo.size, mo.MD5, src_size, src_md5)
+                    manifest_objects.append(new_mo)
+
+                # Clean up temp files for this chunk
+                for temp_file in temp_files:
+                    try:
+                        os.remove(temp_file)
+                    except OSError:
+                        pass
+
         return manifest_objects
 
     async def _upload_blobs(self, srcs: t.List[t.Union[Path, str]], dest: str) -> t.List[ManifestObject]:

@@ -153,17 +153,18 @@ class AbstractStorage(abc.ABC):
         :param dest: the path where to download the objects locally
         :return:
         """
-        if hasattr(self.config, 'key_secret_base64') and self.config.key_secret_base64:
-            return self._download_encrypted_blobs(srcs, dest)
-
         loop = self.get_or_create_event_loop()
-        loop.run_until_complete(self._download_blobs(srcs, dest))
+        if hasattr(self.config, 'key_secret_base64') and self.config.key_secret_base64:
+            loop.run_until_complete(self._download_encrypted_blobs(srcs, dest))
+        else:
+            loop.run_until_complete(self._download_blobs(srcs, dest))
 
-    def _download_encrypted_blobs(self, srcs, dest):
+    async def _download_encrypted_blobs(self, srcs, dest):
         from medusa.storage.encryption import EncryptionManager
 
         manager = EncryptionManager(self.config.key_secret_base64)
-        loop = self.get_or_create_event_loop()
+        # Use loop from self.get_or_create_event_loop() if needed, but we are inside async func
+        loop = asyncio.get_running_loop()
 
         chunk_size = int(self.config.concurrent_transfers)
         srcs = [str(s) for s in srcs]
@@ -172,27 +173,31 @@ class AbstractStorage(abc.ABC):
         with tempfile.TemporaryDirectory() as temp_dir:
             for chunk in chunks:
                 # Download chunk to temp_dir
-                loop.run_until_complete(self._download_blobs(chunk, temp_dir))
+                await self._download_blobs(chunk, temp_dir)
 
                 # Decrypt
-                for src in chunk:
-                    src_path = Path(src)
-                    # Use the same logic as storage driver to find where it landed
-                    temp_file_path = Path(AbstractStorage.path_maybe_with_parent(temp_dir, src_path))
-                    final_file_path = Path(AbstractStorage.path_maybe_with_parent(dest, src_path))
+                # Offload decryption to executor to keep the loop responsive
+                await loop.run_in_executor(None, self._decrypt_chunk, manager, chunk, temp_dir, dest)
 
-                    # Ensure dest dir exists
-                    final_file_path.parent.mkdir(parents=True, exist_ok=True)
+    def _decrypt_chunk(self, manager, chunk, temp_dir, dest):
+        for src in chunk:
+            src_path = Path(src)
+            # Use the same logic as storage driver to find where it landed
+            temp_file_path = Path(AbstractStorage.path_maybe_with_parent(temp_dir, src_path))
+            final_file_path = Path(AbstractStorage.path_maybe_with_parent(dest, src_path))
 
-                    if temp_file_path.exists():
-                        manager.decrypt_file(temp_file_path, final_file_path)
-                        # remove temp file immediately
-                        try:
-                            os.remove(temp_file_path)
-                        except OSError:
-                            pass
-                    else:
-                        logging.warning("Encrypted file not found after download: {}".format(temp_file_path))
+            # Ensure dest dir exists
+            final_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+            if temp_file_path.exists():
+                manager.decrypt_file(temp_file_path, final_file_path)
+                # remove temp file immediately
+                try:
+                    os.remove(temp_file_path)
+                except OSError:
+                    pass
+            else:
+                logging.warning("Encrypted file not found after download: {}".format(temp_file_path))
 
     async def _download_blobs(self, srcs: t.List[t.Union[Path, str]], dest: t.Union[Path, str]):
         chunk_size = int(self.config.concurrent_transfers)
@@ -213,18 +218,18 @@ class AbstractStorage(abc.ABC):
         :param dest: the location where to upload the files in the target bucket (doesn't contain the filename)
         :return: a list of ManifestObject describing all the uploaded files
         """
-        if hasattr(self.config, 'key_secret_base64') and self.config.key_secret_base64:
-            return self._upload_encrypted_blobs(srcs, dest)
-
         loop = self.get_or_create_event_loop()
-        manifest_objects = loop.run_until_complete(self._upload_blobs(srcs, dest))
-        return manifest_objects
+        if hasattr(self.config, 'key_secret_base64') and self.config.key_secret_base64:
+            return loop.run_until_complete(self._upload_encrypted_blobs(srcs, dest))
+        else:
+            manifest_objects = loop.run_until_complete(self._upload_blobs(srcs, dest))
+            return manifest_objects
 
-    def _upload_encrypted_blobs(self, srcs, dest):
+    async def _upload_encrypted_blobs(self, srcs, dest):
         from medusa.storage.encryption import EncryptionManager
 
         manager = EncryptionManager(self.config.key_secret_base64)
-        loop = self.get_or_create_event_loop()
+        loop = asyncio.get_running_loop()
         manifest_objects = []
         chunk_size = int(self.config.concurrent_transfers)
 
@@ -236,20 +241,15 @@ class AbstractStorage(abc.ABC):
         with tempfile.TemporaryDirectory() as temp_dir:
             for chunk in src_chunks:
                 # Prepare this chunk
-                temp_files = []
-                metadata_map = {}  # path -> (source_md5, source_size)
+                # We use run_in_executor for the encryption process
+                encryption_results = await loop.run_in_executor(None, self._encrypt_chunk, manager, chunk, temp_dir)
+                # encryption_results is list of (temp_path_str, src_md5, src_size)
 
-                for src in chunk:
-                    src_path = Path(src)
-                    temp_path = Path(temp_dir) / src_path.name
-
-                    enc_md5, enc_size, src_md5, src_size = manager.encrypt_file(src, temp_path)
-
-                    temp_files.append(str(temp_path))
-                    metadata_map[str(temp_path)] = (src_md5, src_size)
+                temp_files = [r[0] for r in encryption_results]
+                metadata_map = {r[0]: (r[1], r[2]) for r in encryption_results}
 
                 # Upload this chunk
-                chunk_results = loop.run_until_complete(self._upload_blobs(temp_files, dest))
+                chunk_results = await self._upload_blobs(temp_files, dest)
 
                 # Process results
                 for i, mo in enumerate(chunk_results):
@@ -261,7 +261,7 @@ class AbstractStorage(abc.ABC):
                     new_mo = ManifestObject(mo.path, mo.size, mo.MD5, src_size, src_md5)
                     manifest_objects.append(new_mo)
 
-                # Clean up temp files for this chunk
+                # Clean up temp files for this chunk (sync is fine, it's fast)
                 for temp_file in temp_files:
                     try:
                         os.remove(temp_file)
@@ -269,6 +269,15 @@ class AbstractStorage(abc.ABC):
                         pass
 
         return manifest_objects
+
+    def _encrypt_chunk(self, manager, chunk, temp_dir):
+        results = []
+        for src in chunk:
+            src_path = Path(src)
+            temp_path = Path(temp_dir) / src_path.name
+            enc_md5, enc_size, src_md5, src_size = manager.encrypt_file(src, temp_path)
+            results.append((str(temp_path), src_md5, src_size))
+        return results
 
     async def _upload_blobs(self, srcs: t.List[t.Union[Path, str]], dest: str) -> t.List[ManifestObject]:
         coros = [self._upload_blob(src, dest) for src in map(str, srcs)]

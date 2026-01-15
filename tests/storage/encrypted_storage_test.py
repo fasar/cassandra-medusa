@@ -127,7 +127,7 @@ class EncryptedStorageTest(unittest.TestCase):
 
             # We need a side_effect for mock_download_blobs_impl that writes the encrypted file
             # to the temp dir it receives as 2nd argument.
-            def side_effect(srcs, dest_dir):
+            async def side_effect(srcs, dest_dir):
                 # srcs is list of strings (paths relative to bucket)
                 # dest_dir is the temp dir
                 for src in srcs:

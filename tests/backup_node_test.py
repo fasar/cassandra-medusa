@@ -174,6 +174,60 @@ class BackupNodeTest(unittest.TestCase):
         self.assertEqual([table2_srcs[0]], t2_reupload)
         self.assertEqual([], t2_already_up)
 
+    @patch("medusa.storage")
+    @patch("medusa.storage.node_backup.NodeBackup")
+    def test_check_already_uploaded_with_encryption(self, mock_storage, mock_node_backup):
+        # Test scenario:
+        # Previous backup has encrypted files.
+        # Manifest has: size=100 (encrypted), source_size=90 (plain).
+        # Local file has size=90.
+        # Expected: considered match (no upload).
+
+        def mo(path, size, hash, source_size=None, source_hash=None):
+            return ManifestObject(path, size, hash, source_size, source_hash)
+
+        mock_node_backup.is_differential = True
+
+        # Mock file_matches_storage to behave like S3/Local comparison
+        # It compares local file size vs cached_item.size
+        def mock_file_matches_storage(src, cached_item, threshold, enable_md5):
+            # The logic in check_already_uploaded constructs a temporary ManifestObject
+            # where size is set to source_size.
+            # So here we expect cached_item.size to be 90 (the source size)
+            # and we simulate local file size being 90.
+            local_file_size = 90
+            return local_file_size == cached_item.size
+
+        mock_storage.storage_driver.file_matches_storage.side_effect = mock_file_matches_storage
+
+        files_in_storage = {
+            'keyspace1': {
+                'table1': {
+                    'data.db': mo('data.db', 100, 'enc_hash', 90, 'plain_hash'),
+                }
+            }
+        }
+
+        table1_srcs = [
+            pathlib.Path('/data/keyspace1/table1/snapshots/snap/data.db'),
+        ]
+
+        backup, reupload, already_up = check_already_uploaded(
+            mock_storage,
+            mock_node_backup,
+            multipart_threshold=100,
+            enable_md5_checks=False,
+            files_in_storage=files_in_storage,
+            keyspace='keyspace1',
+            srcs=table1_srcs
+        )
+
+        self.assertEqual([], backup)
+        self.assertEqual([], reupload)
+        # It should be in already_backed_up because source_size (90) matches local size (90)
+        self.assertEqual(1, len(already_up))
+        self.assertEqual(files_in_storage['keyspace1']['table1']['data.db'], already_up[0])
+
 
 if __name__ == '__main__':
     unittest.main()

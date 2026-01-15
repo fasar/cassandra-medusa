@@ -105,7 +105,7 @@ def _check_available_space(manifest, destination):
 
 
 def _get_download_size(manifest):
-    return sum([int(obj['size']) for section in manifest for obj in section['objects']])
+    return sum([int(obj.get('source_size', obj['size'])) for section in manifest for obj in section['objects']])
 
 
 def _get_available_size(destination_dir):

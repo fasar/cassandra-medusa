@@ -115,7 +115,27 @@ class S3BaseStorage(AbstractStorage):
             self.sse_c_key = base64.b64decode(config.sse_c_key)
 
         # Setup client-side encryption
-        encryption_config = EncryptionConfig(cse_key=getattr(config, 'cse_key', None))
+        # getattr(config, 'cse_key', None) might raise KeyError if config is a dict-like object
+        # that doesn't support getattr but behaves like one (e.g. namedtuple with missing field)
+        # or if config is just a dict. The tests seem to pass a MagicMock or a namedtuple.
+
+        cse_key = None
+        try:
+            # Try to access as attribute first
+            cse_key = config.cse_key
+        except AttributeError:
+             # If that fails, try as a dict item
+             try:
+                 cse_key = config['cse_key']
+             except (TypeError, KeyError):
+                 # If both fail, assume it's not set
+                 cse_key = None
+        except KeyError:
+             # This handles the case where it behaves like a dict/namedtuple but raises KeyError on attribute access?
+             # (which is weird for standard namedtuples, but maybe it's a custom thing)
+             cse_key = None
+
+        encryption_config = EncryptionConfig(cse_key=cse_key)
         self.encryption_manager = EncryptionManager(encryption_config)
 
         self.credentials = self._consolidate_credentials(config)
@@ -444,8 +464,20 @@ class S3BaseStorage(AbstractStorage):
         return mo
 
     def __upload_file(self, upload_conf):
+        source_size = os.stat(upload_conf['Filename']).st_size
+        source_MD5 = None
+
         if self.encryption_manager.is_enabled:
             # For client-side encryption, we need to encrypt the file as a stream
+            # We also calculate the MD5 of the source file on the fly if possible, or before
+            # Since aws-encryption-sdk uses a stream, we can't easily hook into it to calculate MD5 of source without reading twice
+            # unless we wrap the file stream.
+
+            # Optimization: Calculate MD5 only if we really need it?
+            # The requirement is to have it in the manifest.
+            # Double read is acceptable for now to ensure correctness.
+            source_MD5 = AbstractStorage.generate_md5_hash(upload_conf['Filename'])
+
             with open(upload_conf['Filename'], 'rb') as file_stream:
                 with self.encryption_manager.encrypt_stream(
                     file_stream, upload_conf['Key'], self.storage_provider
@@ -468,6 +500,7 @@ class S3BaseStorage(AbstractStorage):
                     Config=upload_conf['Config'],
                     ExtraArgs=upload_conf['ExtraArgs']
                 )
+            source_MD5 = None # We rely on S3 etag for non-encrypted files usually
 
         extra_args = {}
         if self.sse_c_key is not None:
@@ -478,7 +511,13 @@ class S3BaseStorage(AbstractStorage):
         blob_name = upload_conf['Key']
         blob_size = int(resp['ContentLength'])
         blob_hash = resp['ETag'].replace('"', '')
-        return ManifestObject(blob_name, blob_size, blob_hash)
+
+        # If encryption is not enabled, source_size is same as blob_size and source_MD5 (roughly) same as blob_hash (if single part)
+        if not self.encryption_manager.is_enabled:
+            source_size = blob_size
+            source_MD5 = blob_hash
+
+        return ManifestObject(blob_name, blob_size, blob_hash, source_size, source_MD5)
 
     async def _get_object(self, object_key: t.Union[Path, str]) -> AbstractBlob:
         blob = await self._stat_blob(str(object_key))

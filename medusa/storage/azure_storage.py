@@ -214,8 +214,12 @@ class AzureStorage(AbstractStorage):
                 standard_blob_tier=StandardBlobTier(storage_class.capitalize()) if storage_class else None,
             )
         blob_properties = await blob_client.get_blob_properties()
+        # For Azure, source_size and source_MD5 are the same as the uploaded blob properties
+        # as client-side encryption is not implemented for Azure in this context yet.
         mo = ManifestObject(
             blob_properties.name,
+            blob_properties.size,
+            self._get_blob_hash(blob_properties),
             blob_properties.size,
             self._get_blob_hash(blob_properties),
         )

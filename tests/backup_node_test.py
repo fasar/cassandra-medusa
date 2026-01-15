@@ -88,7 +88,7 @@ class BackupNodeTest(unittest.TestCase):
     def test_check_already_uploaded(self, mock_storage, mock_node_backup):
 
         def mo(path, size, hash='whatever'):
-            return ManifestObject(path, size, hash)
+            return ManifestObject(path, size, hash, size, hash)
 
         mock_node_backup.is_differential = True
 

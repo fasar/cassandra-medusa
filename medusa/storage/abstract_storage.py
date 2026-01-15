@@ -40,8 +40,9 @@ AbstractBlob = collections.namedtuple('AbstractBlob', ['name', 'size', 'hash', '
 AbstractBlobMetadata = collections.namedtuple('AbstractBlobMetadata',
                                               ['name', 'sse_enabled', 'sse_key_id', 'sse_customer_key_md5'])
 
-ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5'])
-
+ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5', 'source_size', 'source_MD5'])
+# Set defaults for source_size and source_MD5 to be None, to ensure backwards compatibility
+ManifestObject.__new__.__defaults__ = (None, None)
 
 class ObjectDoesNotExistError(Exception):
     pass
@@ -128,7 +129,7 @@ class AbstractStorage(abc.ABC):
             headers=headers,
         )
 
-        return ManifestObject(obj.name, obj.size, obj.hash)
+        return ManifestObject(obj.name, obj.size, obj.hash, obj.size, obj.hash)
 
     def upload_object_via_stream(self, data: io.BytesIO, object_name: str, headers: t.Dict[str, str]) -> AbstractBlob:
         loop = self.get_or_create_event_loop()

@@ -149,8 +149,12 @@ class LocalStorage(AbstractStorage):
                     await d.write(data)
                     md5.update(data)
 
+        # For Local Storage, source_size and source_MD5 are the same as the uploaded blob properties
+        # as client-side encryption is not implemented for Local Storage in this context yet.
         return ManifestObject(
             dest_object_key,
+            os.stat(dest_file).st_size,
+            md5.hexdigest(),
             os.stat(dest_file).st_size,
             md5.hexdigest(),
         )

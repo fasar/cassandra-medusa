@@ -23,6 +23,8 @@ import traceback
 import typing as t
 import psutil
 
+# Ensure json and pathlib are available (they are imported above)
+
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 import medusa.utils
@@ -307,7 +309,18 @@ def backup_snapshots(storage, manifest, node_backup, snapshot, enable_md5_checks
 
         if node_backup.is_differential:
             logging.info(f'Listing already backed up files for node {node_backup.fqdn}')
-            files_in_storage = storage.list_files_per_table()
+            # We first try to get files from the latest backup manifest (faster and supports encryption)
+            try:
+                latest_backup = storage.latest_node_backup(fqdn=node_backup.fqdn)
+                if latest_backup:
+                    logging.info(f'Using latest backup {latest_backup.name} manifest for differential backup comparison')
+                    files_in_storage = get_files_from_manifest(latest_backup)
+                else:
+                     logging.info('No previous backup found, listing files from storage')
+                     files_in_storage = storage.list_files_per_table()
+            except Exception as e:
+                logging.warning(f'Failed to get files from manifest: {e}. Fallback to listing files from storage.')
+                files_in_storage = storage.list_files_per_table()
         else:
             files_in_storage = {}
 
@@ -396,7 +409,27 @@ def check_already_uploaded(
                 continue
             # object is in storage but with different size or digest
             storage_driver = storage.storage_driver
-            if not storage_driver.file_matches_storage(src, item_in_storage, multipart_threshold, enable_md5_checks):
+
+            # Create a mock manifest object using source_size/source_MD5 if available
+            # This ensures we compare local file against source properties (unencrypted)
+            # if the item_in_storage comes from a previous manifest which has encryption
+
+            # Use source_size if available, else fallback to size (backwards compat or unencrypted)
+            size_to_compare = item_in_storage.source_size if item_in_storage.source_size is not None else item_in_storage.size
+            # Use source_MD5 if available, else fallback to MD5
+            md5_to_compare = item_in_storage.source_MD5 if item_in_storage.source_MD5 is not None else item_in_storage.MD5
+
+            # Construct a temporary item for comparison that reflects the expected LOCAL file properties
+            # We preserve the original item_in_storage path/etc, but update size/MD5 for the check
+            item_for_comparison = ManifestObject(
+                item_in_storage.path,
+                size_to_compare,
+                md5_to_compare,
+                item_in_storage.source_size,
+                item_in_storage.source_MD5
+            )
+
+            if not storage_driver.file_matches_storage(src, item_for_comparison, multipart_threshold, enable_md5_checks):
                 needs_reupload.append(src)
                 continue
             # object is in storage with correct size and digest
@@ -413,8 +446,51 @@ def make_manifest_object(fqdn, snapshot_path, manifest_objects, storage):
             'path': url_to_path(manifest_object.path, fqdn, storage),
             'MD5': manifest_object.MD5,
             'size': manifest_object.size,
+            'source_MD5': manifest_object.source_MD5,
+            'source_size': manifest_object.source_size,
         } for manifest_object in manifest_objects]
     }
+
+
+def get_files_from_manifest(node_backup):
+    """
+    Parses the manifest of a node backup and returns a dictionary structure similar to list_files_per_table.
+    This structure is used for differential backups to check if files already exist.
+    """
+    manifest = json.loads(node_backup.manifest)
+    files_by_keyspace_and_table = {}
+
+    for section in manifest:
+        keyspace = section['keyspace']
+        # columnfamily in manifest might be table name or table.index_name
+        table = section['columnfamily']
+
+        if keyspace not in files_by_keyspace_and_table:
+            files_by_keyspace_and_table[keyspace] = {}
+
+        if table not in files_by_keyspace_and_table[keyspace]:
+            files_by_keyspace_and_table[keyspace][table] = {}
+
+        for obj in section['objects']:
+            # Construct ManifestObject from manifest entry
+            # The path in manifest includes the fqdn prefix, but we need just the filename for comparison
+            # assuming standard layout
+            path = pathlib.Path(obj['path'])
+            filename = path.name
+
+            # We faithfully reconstruct the ManifestObject from the JSON.
+            # check_already_uploaded will handle comparing against source_size/source_MD5
+
+            mo = ManifestObject(
+                path=obj['path'],
+                size=obj['size'],
+                MD5=obj['MD5'],
+                source_size=obj.get('source_size'),
+                source_MD5=obj.get('source_MD5')
+            )
+            files_by_keyspace_and_table[keyspace][table][filename] = mo
+
+    return files_by_keyspace_and_table
 
 
 def url_to_path(url, fqdn, storage):

@@ -241,7 +241,9 @@ class GoogleStorage(AbstractStorage):
                     force_resumable_upload=True,
                     timeout=None,
                 )
-        mo = ManifestObject(resp['name'], int(resp['size']), resp['md5Hash'])
+        # For GCS, source_size and source_MD5 are the same as the uploaded blob properties
+        # as client-side encryption is not implemented for GCS in this context yet.
+        mo = ManifestObject(resp['name'], int(resp['size']), resp['md5Hash'], int(resp['size']), resp['md5Hash'])
         return mo
 
     async def _get_object(self, object_key: str) -> AbstractBlob:

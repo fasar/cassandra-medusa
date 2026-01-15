@@ -264,7 +264,7 @@ class NodeBackup(object):
 
     def size(self):
         return sum(
-            obj['size']
+            obj.get('source_size', obj['size'])
             for section in json.loads(self.manifest)
             for obj in section['objects']
         )

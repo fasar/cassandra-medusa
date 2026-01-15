@@ -22,6 +22,8 @@ from cryptography.fernet import Fernet
 # Chunk size for reading/encrypting.
 # 1MB seems reasonable balance between memory usage and overhead.
 CHUNK_SIZE = 1024 * 1024
+# Max reasonable chunk size (1MB + Fernet overhead + padding). Safety check.
+MAX_CHUNK_SIZE = 2 * 1024 * 1024
 
 
 class EncryptionManager:
@@ -76,10 +78,15 @@ class EncryptionManager:
                     break
 
                 chunk_len = struct.unpack('>I', len_bytes)[0]
+
+                # Sanity check for chunk length to detect non-encrypted files or corruption early
+                if chunk_len > MAX_CHUNK_SIZE:
+                    raise IOError(f"Corrupted encrypted file or plaintext file detected: chunk length {chunk_len} exceeds max {MAX_CHUNK_SIZE}")
+
                 encrypted_chunk = f_in.read(chunk_len)
 
                 if len(encrypted_chunk) != chunk_len:
-                    raise IOError("Corrupted encrypted file: incomplete chunk")
+                    raise IOError(f"Corrupted encrypted file: expected {chunk_len} bytes, got {len(encrypted_chunk)}")
 
                 decrypted_chunk = self.fernet.decrypt(encrypted_chunk)
                 f_out.write(decrypted_chunk)

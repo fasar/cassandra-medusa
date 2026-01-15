@@ -170,7 +170,8 @@ class AbstractStorage(abc.ABC):
         srcs = [str(s) for s in srcs]
         chunks = [srcs[i:i + chunk_size] for i in range(0, len(srcs), chunk_size)]
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        kms_tmp_dir = self.config.kms_tmp_dir if hasattr(self.config, 'kms_tmp_dir') else None
+        with tempfile.TemporaryDirectory(dir=kms_tmp_dir) as temp_dir:
             for chunk in chunks:
                 # Download chunk to temp_dir
                 await self._download_blobs(chunk, temp_dir)
@@ -238,7 +239,8 @@ class AbstractStorage(abc.ABC):
         # Split into chunks
         src_chunks = [srcs[i:i + chunk_size] for i in range(0, len(srcs), chunk_size)]
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        kms_tmp_dir = self.config.kms_tmp_dir if hasattr(self.config, 'kms_tmp_dir') else None
+        with tempfile.TemporaryDirectory(dir=kms_tmp_dir) as temp_dir:
             for chunk in src_chunks:
                 # Prepare this chunk
                 # We use run_in_executor for the encryption process

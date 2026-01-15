@@ -69,7 +69,8 @@ class EncryptedStorageTest(unittest.TestCase):
             'concurrent_transfers': '1',
             'key_secret_base64': self.key,
             'storage_class': 'STANDARD',
-             'read_timeout': None
+             'read_timeout': None,
+             'kms_tmp_dir': None
         }
 
         # Create a mock config object using namedtuple as base
@@ -120,6 +121,9 @@ class EncryptedStorageTest(unittest.TestCase):
 
         from medusa.storage.encryption import EncryptionManager
         manager = EncryptionManager(self.key)
+
+        # Test with a specific temp dir configuration
+        self.storage.config.kms_tmp_dir = tempfile.gettempdir()
 
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create an encrypted file that "download" will simulate

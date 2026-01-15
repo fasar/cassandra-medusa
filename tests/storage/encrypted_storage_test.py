@@ -37,8 +37,13 @@ class MockStorage(AbstractStorage):
     async def _download_blob(self, src, dest):
         pass
     async def _upload_blob(self, src, dest):
-        # Return a dummy ManifestObject for the upload
-        return ManifestObject(path=f"{dest}/{pathlib.Path(src).name}", size=100, MD5="enc_hash")
+        # Simulate path_maybe_with_parent logic which is usually called by _upload_blob implementation
+        # But here we are mocking the abstract method directly.
+        # Wait, the AbstractStorage._upload_blob is abstract. The implementations (S3, etc) use path_maybe_with_parent.
+        # So our MockStorage should behave like a real implementation.
+        src_path = pathlib.Path(src)
+        object_key = AbstractStorage.path_maybe_with_parent(dest, src_path)
+        return ManifestObject(path=object_key, size=100, MD5="enc_hash")
     async def _get_object(self, object_key):
         pass
     async def _read_blob_as_bytes(self, blob):
@@ -113,6 +118,46 @@ class EncryptedStorageTest(unittest.TestCase):
 
             # Verify the path is correct
             self.assertEqual(mo.path, f"{dest}/test.txt")
+
+    def test_upload_encrypted_blobs_with_secondary_index(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create a structure like .../table/.index_name/file.db
+            index_dir = os.path.join(temp_dir, ".test_idx")
+            os.mkdir(index_dir)
+
+            src_file = os.path.join(index_dir, "test.db")
+            with open(src_file, "wb") as f:
+                f.write(b"index content")
+
+            srcs = [pathlib.Path(src_file)]
+            dest = "backup/data"
+
+            # Mock _upload_blob to verify the object key passed to it
+            # We want to ensure it includes the .test_idx/ parent
+
+            original_upload_blob = self.storage._upload_blob
+
+            async def mock_upload_blob(src, dest):
+                # We can inspect the src path here.
+                # src should be the path to the encrypted temp file.
+                # It should reside in a .test_idx subdir of the temp dir.
+                src_path = pathlib.Path(src)
+                if not src_path.parent.name.startswith("."):
+                     raise ValueError(f"Temp file {src} is not in a secondary index folder")
+
+                # Check that path_maybe_with_parent works as expected
+                key = AbstractStorage.path_maybe_with_parent(dest, src_path)
+                if ".test_idx" not in key:
+                     raise ValueError(f"Object key {key} does not contain index name")
+
+                return await original_upload_blob(src, dest)
+
+            with patch.object(self.storage, '_upload_blob', side_effect=mock_upload_blob):
+                manifests = self.storage.upload_blobs(srcs, dest)
+
+            self.assertEqual(len(manifests), 1)
+            mo = manifests[0]
+            self.assertIn(".test_idx", mo.path)
 
     @patch("medusa.storage.abstract_storage.AbstractStorage._download_blobs")
     def test_download_encrypted_blobs(self, mock_download_blobs_impl):

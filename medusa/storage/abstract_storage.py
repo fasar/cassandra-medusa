@@ -276,7 +276,15 @@ class AbstractStorage(abc.ABC):
         results = []
         for src in chunk:
             src_path = Path(src)
-            temp_path = Path(temp_dir) / src_path.name
+            # Recreate special subdirectories (e.g. secondary indexes) in temp_dir
+            # to preserve structure for upload path calculation.
+            if src_path.parent.name.startswith(".") or src_path.parent.name.endswith('nodes'):
+                sub_dir = Path(temp_dir) / src_path.parent.name
+                sub_dir.mkdir(parents=True, exist_ok=True)
+                temp_path = sub_dir / src_path.name
+            else:
+                temp_path = Path(temp_dir) / src_path.name
+
             enc_md5, enc_size, src_md5, src_size = manager.encrypt_file(src, temp_path)
             results.append((str(temp_path), src_md5, src_size))
         return results

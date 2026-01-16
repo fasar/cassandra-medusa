@@ -26,6 +26,7 @@ import tempfile
 import os
 import shutil
 import typing as t
+import re
 
 from pathlib import Path
 from tenacity import retry, stop_after_attempt, wait_exponential, wait_fixed
@@ -37,6 +38,7 @@ MULTIPART_BLOCK_SIZE_BYTES = 65536
 MULTIPART_BLOCKS_PER_MB = 16
 MAX_UP_DOWN_LOAD_RETRIES = 5
 
+PLAINTEXT_FILES_REGEX = re.compile(r'(manifest.*\.json|schema.*\.cql|server_version.*\.json|tokenmap.*\.json|backup_name\.txt)')
 
 AbstractBlob = collections.namedtuple('AbstractBlob', ['name', 'size', 'hash', 'last_modified', 'storage_class'])
 
@@ -192,10 +194,10 @@ class AbstractStorage(abc.ABC):
             final_file_path.parent.mkdir(parents=True, exist_ok=True)
 
             if temp_file_path.exists():
-                # manifest.json and schema.cql are always uploaded as plaintext.
+                # Metadata files are always uploaded as plaintext.
                 # If they appear in the download list (which happens during restore),
                 # we must skip decryption and just move them.
-                if src_path.name in ['manifest.json', 'schema.cql']:
+                if PLAINTEXT_FILES_REGEX.match(src_path.name):
                     shutil.move(str(temp_file_path), str(final_file_path))
                 else:
                     manager.decrypt_file(temp_file_path, final_file_path)

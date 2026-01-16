@@ -209,8 +209,8 @@ class EncryptedStorageTest(unittest.TestCase):
                 self.assertEqual(f.read(), original_content)
 
     @patch("medusa.storage.abstract_storage.AbstractStorage._download_blobs")
-    def test_download_encrypted_blobs_skips_manifest(self, mock_download_blobs_impl):
-        # Verify that manifest.json is NOT decrypted but moved directly
+    def test_download_encrypted_blobs_skips_plaintext_files(self, mock_download_blobs_impl):
+        # Verify that metadata files are NOT decrypted but moved directly
 
         from medusa.storage.encryption import EncryptionManager
         manager = EncryptionManager(self.key)
@@ -219,7 +219,7 @@ class EncryptedStorageTest(unittest.TestCase):
         self.storage.config.kms_tmp_dir = tempfile.gettempdir()
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Create a plaintext manifest file
+            # Create a plaintext content
             original_content = b'{"json": "plaintext"}'
 
             async def side_effect(srcs, dest_dir):
@@ -232,19 +232,27 @@ class EncryptedStorageTest(unittest.TestCase):
 
             mock_download_blobs_impl.side_effect = side_effect
 
-            # Test parameters
-            srcs = ["backup/meta/manifest.json"]
+            # Test parameters with various metadata files matching the regex
+            srcs = [
+                "backup/meta/manifest.json",
+                "backup/meta/manifest_fqdn.json",
+                "backup/meta/schema.cql",
+                "backup/meta/tokenmap.json",
+                "backup/meta/server_version.json",
+                "backup/index/backup_name.txt"
+            ]
             dest = pathlib.Path(temp_dir) / "final_dest"
 
             # This should NOT raise invalid chunk error
             self.storage.download_blobs(srcs, dest)
 
-            # Check if file exists in final destination and is plaintext
-            final_file = dest / "manifest.json"
-            self.assertTrue(final_file.exists())
+            # Check if files exist in final destination and are plaintext
+            for src in srcs:
+                final_file = dest / pathlib.Path(src).name
+                self.assertTrue(final_file.exists(), f"File {final_file} should exist")
 
-            with open(final_file, "rb") as f:
-                self.assertEqual(f.read(), original_content)
+                with open(final_file, "rb") as f:
+                    self.assertEqual(f.read(), original_content, f"Content mismatch for {final_file}")
 
 if __name__ == '__main__':
     unittest.main()

@@ -208,5 +208,43 @@ class EncryptedStorageTest(unittest.TestCase):
             with open(final_file, "rb") as f:
                 self.assertEqual(f.read(), original_content)
 
+    @patch("medusa.storage.abstract_storage.AbstractStorage._download_blobs")
+    def test_download_encrypted_blobs_skips_manifest(self, mock_download_blobs_impl):
+        # Verify that manifest.json is NOT decrypted but moved directly
+
+        from medusa.storage.encryption import EncryptionManager
+        manager = EncryptionManager(self.key)
+
+        # Test with a specific temp dir configuration
+        self.storage.config.kms_tmp_dir = tempfile.gettempdir()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create a plaintext manifest file
+            original_content = b'{"json": "plaintext"}'
+
+            async def side_effect(srcs, dest_dir):
+                for src in srcs:
+                    file_name = pathlib.Path(src).name
+                    dest_path = os.path.join(dest_dir, file_name)
+                    # Write PLAINTEXT, do NOT encrypt
+                    with open(dest_path, 'wb') as f:
+                        f.write(original_content)
+
+            mock_download_blobs_impl.side_effect = side_effect
+
+            # Test parameters
+            srcs = ["backup/meta/manifest.json"]
+            dest = pathlib.Path(temp_dir) / "final_dest"
+
+            # This should NOT raise invalid chunk error
+            self.storage.download_blobs(srcs, dest)
+
+            # Check if file exists in final destination and is plaintext
+            final_file = dest / "manifest.json"
+            self.assertTrue(final_file.exists())
+
+            with open(final_file, "rb") as f:
+                self.assertEqual(f.read(), original_content)
+
 if __name__ == '__main__':
     unittest.main()

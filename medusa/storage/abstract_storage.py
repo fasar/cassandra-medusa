@@ -24,6 +24,7 @@ import logging
 import pathlib
 import tempfile
 import os
+import shutil
 import typing as t
 
 from pathlib import Path
@@ -191,12 +192,18 @@ class AbstractStorage(abc.ABC):
             final_file_path.parent.mkdir(parents=True, exist_ok=True)
 
             if temp_file_path.exists():
-                manager.decrypt_file(temp_file_path, final_file_path)
-                # remove temp file immediately
-                try:
-                    os.remove(temp_file_path)
-                except OSError:
-                    pass
+                # manifest.json and schema.cql are always uploaded as plaintext.
+                # If they appear in the download list (which happens during restore),
+                # we must skip decryption and just move them.
+                if src_path.name in ['manifest.json', 'schema.cql']:
+                    shutil.move(str(temp_file_path), str(final_file_path))
+                else:
+                    manager.decrypt_file(temp_file_path, final_file_path)
+                    # remove temp file immediately
+                    try:
+                        os.remove(temp_file_path)
+                    except OSError:
+                        pass
             else:
                 logging.warning("Encrypted file not found after download: {}".format(temp_file_path))
 

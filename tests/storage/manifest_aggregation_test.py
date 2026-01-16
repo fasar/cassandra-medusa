@@ -62,24 +62,7 @@ class GetAllManifestsTest(unittest.TestCase):
 
     def test_get_files_from_all_differential_backups(self):
         # Create dummy backups
-        # Old Full Backup (should be ignored because backup2 is Full)
-        backup0 = MagicMock()
-        backup0.name = "backup0"
-        backup0.is_differential = False
-        backup0.manifest = json.dumps([
-            {
-                "keyspace": "ks1",
-                "columnfamily": "cf1",
-                "objects": [
-                    {
-                        "path": "prefix/test-fqdn/backup0/data/ks1/cf1/f_old.db",
-                        "size": 100, "MD5": "m", "source_size": 90, "source_MD5": "s"
-                    }
-                ]
-            }
-        ])
-
-        # Full Backup (Start of chain)
+        # Full Backup (Should be ignored by differential aggregation)
         backup1 = MagicMock()
         backup1.name = "backup1"
         backup1.is_differential = False
@@ -89,7 +72,7 @@ class GetAllManifestsTest(unittest.TestCase):
                 "columnfamily": "cf1",
                 "objects": [
                     {
-                        "path": "prefix/test-fqdn/backup1/data/ks1/cf1/f1.db",
+                        "path": "prefix/test-fqdn/backup1/data/ks1/cf1/f_full.db",
                         "size": 100,
                         "MD5": "md5_1",
                         "source_size": 90,
@@ -99,7 +82,7 @@ class GetAllManifestsTest(unittest.TestCase):
             }
         ])
 
-        # Differential Backup
+        # Differential Backup 1
         backup2 = MagicMock()
         backup2.name = "backup2"
         backup2.is_differential = True
@@ -109,15 +92,35 @@ class GetAllManifestsTest(unittest.TestCase):
                 "columnfamily": "cf1",
                 "objects": [
                     {
-                        # Newer version of f1.db (different source MD5)
-                        "path": "prefix/test-fqdn/backup2/data/ks1/cf1/f1.db",
+                        "path": "prefix/test-fqdn/backup2/data/ks1/cf1/f_diff1.db",
                         "size": 110,
                         "MD5": "md5_2",
                         "source_size": 95,
                         "source_MD5": "src_md5_2"
+                    }
+                ]
+            }
+        ])
+
+        # Differential Backup 2
+        backup3 = MagicMock()
+        backup3.name = "backup3"
+        backup3.is_differential = True
+        backup3.manifest = json.dumps([
+             {
+                "keyspace": "ks1",
+                "columnfamily": "cf1",
+                "objects": [
+                    {
+                        # Update to f_diff1.db
+                        "path": "prefix/test-fqdn/backup3/data/ks1/cf1/f_diff1.db",
+                        "size": 111,
+                        "MD5": "md5_2_updated",
+                        "source_size": 96,
+                        "source_MD5": "src_md5_2_updated"
                     },
-                     {
-                        "path": "prefix/test-fqdn/backup2/data/ks1/cf1/f2.db",
+                    {
+                        "path": "prefix/test-fqdn/backup3/data/ks1/cf1/f_diff2.db",
                         "size": 200,
                         "MD5": "md5_3",
                         "source_size": 190,
@@ -128,7 +131,7 @@ class GetAllManifestsTest(unittest.TestCase):
         ])
 
         # Mock list_node_backups to return these in chronological order
-        self.storage.list_node_backups = MagicMock(return_value=[backup0, backup1, backup2])
+        self.storage.list_node_backups = MagicMock(return_value=[backup1, backup2, backup3])
 
         # Call the method
         files = self.storage.get_files_from_all_differential_backups()
@@ -138,19 +141,20 @@ class GetAllManifestsTest(unittest.TestCase):
         self.assertIn("cf1", files["ks1"])
 
         cf_files = files["ks1"]["cf1"]
-        self.assertIn("f1.db", cf_files)
-        self.assertIn("f2.db", cf_files)
 
-        # Verify f_old.db from backup0 is NOT included (chain starts at backup1)
-        self.assertNotIn("f_old.db", cf_files)
+        # Verify f_full.db from backup1 (Full) is NOT included
+        self.assertNotIn("f_full.db", cf_files)
 
-        # Check that f1.db is from backup2
-        f1 = cf_files["f1.db"]
-        self.assertEqual(f1.source_MD5, "src_md5_2")
-        self.assertEqual(f1.path, "prefix/test-fqdn/backup2/data/ks1/cf1/f1.db")
+        # Verify f_diff1.db is from backup3 (latest)
+        self.assertIn("f_diff1.db", cf_files)
+        f_diff1 = cf_files["f_diff1.db"]
+        self.assertEqual(f_diff1.source_MD5, "src_md5_2_updated")
+        self.assertEqual(f_diff1.path, "prefix/test-fqdn/backup3/data/ks1/cf1/f_diff1.db")
 
-        f2 = cf_files["f2.db"]
-        self.assertEqual(f2.source_MD5, "src_md5_3")
+        # Verify f_diff2.db is included
+        self.assertIn("f_diff2.db", cf_files)
+        f_diff2 = cf_files["f_diff2.db"]
+        self.assertEqual(f_diff2.source_MD5, "src_md5_3")
 
 if __name__ == '__main__':
     unittest.main()

@@ -520,17 +520,9 @@ class Storage(object):
         # List all backups (sorted by date)
         backups = list(self.list_node_backups(fqdn=self.config.fqdn))
 
-        # Filter backups to only include those in the current chain
-        # (Start from the latest FULL backup, or all if no full backup found)
-        relevant_backups = []
-        for backup in reversed(backups):
-            relevant_backups.append(backup)
-            if not backup.is_differential:
-                # We found a full backup (or at least non-differential). This is the start of the chain.
-                break
-
-        # Reverse back to chronological order (Oldest Full -> Diff -> Diff -> Latest)
-        relevant_backups.reverse()
+        # Filter backups to only include differential backups.
+        # Differential backups use a shared data pool and should not link to Full backups (which are isolated).
+        relevant_backups = [b for b in backups if b.is_differential]
 
         for backup in relevant_backups:
             try:

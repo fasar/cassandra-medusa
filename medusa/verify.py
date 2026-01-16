@@ -94,7 +94,8 @@ def validate_manifest(storage, node_backup, enable_md5_checks):
             # from a previous backup (differential). We try to fetch it directly.
             try:
                 blob = storage.storage_driver.get_blob(object_in_manifest['path'])
-            except Exception:
+            except Exception as e:
+                logging.debug(f"Failed to fetch blob directly: {object_in_manifest['path']}. Error: {e}")
                 pass
 
         if blob is None:

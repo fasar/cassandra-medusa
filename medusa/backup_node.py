@@ -452,5 +452,7 @@ def url_to_path(url, fqdn, storage):
     # depending on the storage provider and type of backup
     # Full backup path is : (<prefix>/)<fqdn>/<backup_name>/data/<keyspace>/<table>/...
     # Differential backup path is : (<prefix>/)<fqdn>/data/<keyspace>/<table>/...
+    if storage.prefix_path and url.startswith(storage.prefix_path):
+        return url
     url_parts = url.split('/')
     return storage.prefix_path + ('/'.join(url_parts[url_parts.index(fqdn):]))

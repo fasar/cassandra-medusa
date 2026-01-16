@@ -500,7 +500,7 @@ class Storage(object):
             prefix = ""
         return f"{prefix}{fqdn}/data/"
 
-    def list_files_per_table(self) -> t.Dict[str, t.Dict[str, t.Set[ManifestObject]]]:
+    def list_files_per_table(self) -> t.Dict[str, t.Dict[str, t.Dict[str, ManifestObject]]]:
         fdns_data_prefix = self._get_table_prefix(self.config.prefix, self.config.fqdn)
         all_blobs: t.List[AbstractBlob] = self.storage_driver.list_blobs(prefix=fdns_data_prefix)
         all_files = [ManifestObject(blob.name, blob.size, blob.hash) for blob in all_blobs]

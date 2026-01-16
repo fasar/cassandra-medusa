@@ -514,13 +514,25 @@ class Storage(object):
 
         return files_by_keyspace_and_table
 
-    def get_files_from_all_manifests(self) -> t.Dict[str, t.Dict[str, t.Dict[str, ManifestObject]]]:
+    def get_files_from_all_differential_backups(self) -> t.Dict[str, t.Dict[str, t.Dict[str, ManifestObject]]]:
         files_by_keyspace_and_table = collections.defaultdict(lambda: collections.defaultdict(dict))
 
-        # List all backups
+        # List all backups (sorted by date)
         backups = list(self.list_node_backups(fqdn=self.config.fqdn))
 
-        for backup in backups:
+        # Filter backups to only include those in the current chain
+        # (Start from the latest FULL backup, or all if no full backup found)
+        relevant_backups = []
+        for backup in reversed(backups):
+            relevant_backups.append(backup)
+            if not backup.is_differential:
+                # We found a full backup (or at least non-differential). This is the start of the chain.
+                break
+
+        # Reverse back to chronological order (Oldest Full -> Diff -> Diff -> Latest)
+        relevant_backups.reverse()
+
+        for backup in relevant_backups:
             try:
                 manifest_str = backup.manifest
                 if not manifest_str:

@@ -60,10 +60,29 @@ class GetAllManifestsTest(unittest.TestCase):
         with patch("medusa.storage.LocalStorage"):
              self.storage = Storage(config=self.config)
 
-    def test_get_files_from_all_manifests(self):
+    def test_get_files_from_all_differential_backups(self):
         # Create dummy backups
+        # Old Full Backup (should be ignored because backup2 is Full)
+        backup0 = MagicMock()
+        backup0.name = "backup0"
+        backup0.is_differential = False
+        backup0.manifest = json.dumps([
+            {
+                "keyspace": "ks1",
+                "columnfamily": "cf1",
+                "objects": [
+                    {
+                        "path": "prefix/test-fqdn/backup0/data/ks1/cf1/f_old.db",
+                        "size": 100, "MD5": "m", "source_size": 90, "source_MD5": "s"
+                    }
+                ]
+            }
+        ])
+
+        # Full Backup (Start of chain)
         backup1 = MagicMock()
         backup1.name = "backup1"
+        backup1.is_differential = False
         backup1.manifest = json.dumps([
             {
                 "keyspace": "ks1",
@@ -80,8 +99,10 @@ class GetAllManifestsTest(unittest.TestCase):
             }
         ])
 
+        # Differential Backup
         backup2 = MagicMock()
         backup2.name = "backup2"
+        backup2.is_differential = True
         backup2.manifest = json.dumps([
              {
                 "keyspace": "ks1",
@@ -106,11 +127,11 @@ class GetAllManifestsTest(unittest.TestCase):
             }
         ])
 
-        # Mock list_node_backups to return these
-        self.storage.list_node_backups = MagicMock(return_value=[backup1, backup2])
+        # Mock list_node_backups to return these in chronological order
+        self.storage.list_node_backups = MagicMock(return_value=[backup0, backup1, backup2])
 
         # Call the method
-        files = self.storage.get_files_from_all_manifests()
+        files = self.storage.get_files_from_all_differential_backups()
 
         # Check structure: files[ks][table][filename]
         self.assertIn("ks1", files)
@@ -120,12 +141,10 @@ class GetAllManifestsTest(unittest.TestCase):
         self.assertIn("f1.db", cf_files)
         self.assertIn("f2.db", cf_files)
 
-        # Check that f1.db is from backup2 (since it was processed last in the loop)
-        # Wait, the loop order depends on list_node_backups order.
-        # AbstractStorage.list_node_backups sorts by start time.
-        # Here we just iterate. If backup2 comes after backup1 in the list, it overwrites.
-        # This simulates "latest version available in storage".
+        # Verify f_old.db from backup0 is NOT included (chain starts at backup1)
+        self.assertNotIn("f_old.db", cf_files)
 
+        # Check that f1.db is from backup2
         f1 = cf_files["f1.db"]
         self.assertEqual(f1.source_MD5, "src_md5_2")
         self.assertEqual(f1.path, "prefix/test-fqdn/backup2/data/ks1/cf1/f1.db")

@@ -308,7 +308,7 @@ def backup_snapshots(storage, manifest, node_backup, snapshot, enable_md5_checks
         if node_backup.is_differential:
             logging.info(f'Listing already backed up files for node {node_backup.fqdn}')
             if storage.config.key_secret_base64:
-                files_in_storage = storage.get_files_from_all_manifests()
+                files_in_storage = storage.get_files_from_all_differential_backups()
             else:
                 files_in_storage = storage.list_files_per_table()
         else:

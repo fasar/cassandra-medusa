@@ -15,35 +15,7 @@
 
 import unittest
 import json
-from unittest.mock import MagicMock, patch
-import pathlib
-
-from medusa.storage.abstract_storage import AbstractStorage, ManifestObject
-from medusa.config import MedusaConfig
-
-class MockStorage(AbstractStorage):
-    def connect(self): pass
-    def disconnect(self): pass
-    async def _list_blobs(self, prefix=None): return []
-    async def _upload_object(self, data, object_key, headers): pass
-    async def _download_blob(self, src, dest): pass
-    async def _upload_blob(self, src, dest): pass
-    async def _get_object(self, object_key): pass
-    async def _read_blob_as_bytes(self, blob): pass
-    async def _delete_object(self, obj): pass
-    @staticmethod
-    def blob_matches_manifest(blob, object_in_manifest, enable_md5_checks=False): pass
-    @staticmethod
-    def file_matches_storage(src, cached_item, threshold=None, enable_md5_checks=False): pass
-    @staticmethod
-    def compare_with_manifest(actual_size, size_in_manifest, actual_hash=None, hash_in_manifest=None, threshold=None): pass
-
-    # Must implement list_node_backups as it's not abstract but depends on other methods
-    # But for this test, we will mock it or the methods it calls.
-    # Actually, list_node_backups is defined in Storage class (medusa/storage/__init__.py),
-    # not AbstractStorage.
-    # The method get_files_from_all_manifests IS IN Storage class.
-
+from unittest.mock import MagicMock
 from medusa.storage import Storage
 
 class GetAllManifestsTest(unittest.TestCase):
@@ -53,12 +25,7 @@ class GetAllManifestsTest(unittest.TestCase):
         self.config.prefix = "prefix"
         self.config.storage_provider = "local" # Just to pass initialization check
         self.config.k8s_mode = None
-
-        # We need to mock _load_storage to return our MockStorage (driver)
-        # But Storage class wraps the driver.
-
-        with patch("medusa.storage.LocalStorage"):
-             self.storage = Storage(config=self.config)
+        self.storage = Storage(config=self.config)
 
     def test_get_files_from_all_differential_backups(self):
         # Create dummy backups

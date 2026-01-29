@@ -80,10 +80,15 @@ class AzureStorage(AbstractStorage):
         return url
 
     def connect(self):
+        proxies = None
+        if self.config.proxy_url:
+            proxies = {'http': self.config.proxy_url, 'https': self.config.proxy_url}
+
         self.azure_blob_service = BlobServiceClient(
             account_url=self.azure_blob_service_url,
             credential=self.credentials,
             max_block_size=4 * 1024 * 1024,        # 50k 20 MB chunks gives ~1 TB max file size
+            proxies=proxies
         )
         self.azure_container_client = self.azure_blob_service.get_container_client(self.bucket_name)
 

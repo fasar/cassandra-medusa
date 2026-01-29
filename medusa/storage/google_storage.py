@@ -68,7 +68,7 @@ class GoogleStorage(AbstractStorage):
 
     def _ensure_session(self):
         if self.session is None:
-            self.session = aiohttp.ClientSession()
+            self.session = aiohttp.ClientSession(trust_env=True)
             self.gcs_storage = Storage(session=self.session, service_file=self.service_file)
 
     def disconnect(self):

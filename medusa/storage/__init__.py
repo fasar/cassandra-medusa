@@ -16,6 +16,7 @@
 import itertools
 import logging
 import operator
+import os
 import pathlib
 import re
 import typing as t
@@ -71,6 +72,11 @@ class Storage(object):
         self._k8s_mode = evaluate_boolean(config.k8s_mode) if config.k8s_mode else False
         self._prefix = pathlib.Path(config.prefix or '.')
         self.prefix_path = str(self._prefix) + '/' if len(str(self._prefix)) > 1 else ''
+
+        if self._config.proxy_url:
+            os.environ['HTTP_PROXY'] = self._config.proxy_url
+            os.environ['HTTPS_PROXY'] = self._config.proxy_url
+
         self.storage_driver = self._load_storage()
         self.storage_provider = self._config.storage_provider
 

@@ -280,13 +280,8 @@ class AbstractStorage(abc.ABC):
             )
         )
 
-        # We need to run the upload in an executor to avoid blocking the loop with file I/O and encryption
-        loop = asyncio.get_running_loop()
-        # But wait, _upload_object_from_stream implementations might be async or sync depending on driver.
-        # Let's assume the driver implementation handles the concurrency or offloading.
-        # But for S3BaseStorage, we will implement it using run_in_executor if it uses blocking boto3.
-
-        # Open the file and wrap it in EncryptedStream
+        # Open the file, wrap it in EncryptedStream, and delegate upload/concurrency handling
+        # to the underlying _upload_object_from_stream implementation.
         with open(src, 'rb') as f:
             stream = encrypted_stream_cls(f, self.config.key_secret_base64)
             manifest_object = await self._upload_object_from_stream(stream, object_key, {})

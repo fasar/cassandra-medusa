@@ -241,7 +241,6 @@ class AbstractStorage(abc.ABC):
     async def _upload_encrypted_blobs(self, srcs, dest):
         from medusa.storage.encryption import EncryptedStream
 
-        loop = asyncio.get_running_loop()
         manifest_objects = []
         chunk_size = int(self.config.concurrent_transfers)
 
@@ -281,7 +280,6 @@ class AbstractStorage(abc.ABC):
         )
 
         # We need to run the upload in an executor to avoid blocking the loop with file I/O and encryption
-        loop = asyncio.get_running_loop()
         # But wait, _upload_object_from_stream implementations might be async or sync depending on driver.
         # Let's assume the driver implementation handles the concurrency or offloading.
         # But for S3BaseStorage, we will implement it using run_in_executor if it uses blocking boto3.
@@ -300,12 +298,13 @@ class AbstractStorage(abc.ABC):
         Default implementation spools the stream to a temporary file on disk to avoid OOM on large files.
         """
         logging.debug(f"Using default file-spooling fallback for upload of {object_key}")
+        loop = asyncio.get_running_loop()
 
         encryption_tmp_dir = self.config.encryption_tmp_dir if hasattr(self.config, 'encryption_tmp_dir') else None
+
+        # Offload blocking IO to executor
         with tempfile.NamedTemporaryFile(dir=encryption_tmp_dir, delete=True) as tmp:
-            # Spool stream to disk
-            shutil.copyfileobj(stream, tmp)
-            tmp.flush()
+            await loop.run_in_executor(None, self._spool_to_temp_file, stream, tmp)
             tmp.seek(0)
 
             # Now upload from the temp file using the standard upload mechanism
@@ -324,6 +323,10 @@ class AbstractStorage(abc.ABC):
             stream.source_size if hasattr(stream, 'source_size') else None,
             stream.md5_source if hasattr(stream, 'md5_source') else None
         )
+
+    def _spool_to_temp_file(self, stream, temp_file):
+        shutil.copyfileobj(stream, temp_file)
+        temp_file.flush()
 
     async def _upload_blobs(self, srcs: t.List[t.Union[Path, str]], dest: str) -> t.List[ManifestObject]:
         coros = [self._upload_blob(src, dest) for src in map(str, srcs)]

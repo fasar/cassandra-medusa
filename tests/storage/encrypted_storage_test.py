@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 from cryptography.fernet import Fernet
 
 from medusa.storage.abstract_storage import AbstractStorage, ManifestObject, AbstractBlob
-from medusa.storage.encryption import EncryptionManager, EncryptedStream
+from medusa.storage.encryption import EncryptionManager
 
 
 class MockStorage(AbstractStorage):

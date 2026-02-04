@@ -145,7 +145,7 @@ class EncryptedStorageTest(unittest.TestCase):
 
             # Check encrypted metadata (calculated by MockStorage._upload_object_from_stream)
             # The size should be > 0 (encrypted content)
-            self.assertTrue(mo.size > 0)
+            self.assertGreater(mo.size, 0)
             self.assertEqual(mo.MD5, "enc_hash_of_stream")
 
             # Verify the path is correct

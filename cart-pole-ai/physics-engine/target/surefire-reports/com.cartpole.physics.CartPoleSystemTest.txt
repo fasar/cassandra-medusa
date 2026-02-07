@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: com.cartpole.physics.CartPoleSystemTest
+-------------------------------------------------------------------------------
+Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.068 s -- in com.cartpole.physics.CartPoleSystemTest

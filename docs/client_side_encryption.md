@@ -12,20 +12,31 @@ This provides an additional layer of security, ensuring that data is encrypted i
 When client-side encryption is enabled:
 
 1. **During Backup**:
-   - SSTable files are encrypted locally using Fernet symmetric encryption
-   - Each file is processed in 1MB chunks to manage memory usage
-   - Encrypted files are uploaded to cloud storage
-   - Metadata files (`manifest.json`, `schema.cql`, etc.) remain unencrypted for compatibility
+   - SSTable files are encrypted locally using Fernet symmetric encryption.
+   - Each file is processed in 1MB chunks to manage memory usage.
+   - Encrypted files are uploaded to cloud storage.
+   - Metadata files (`manifest.json`, `schema.cql`, etc.) remain unencrypted for compatibility.
 
 2. **During Restore**:
-   - Encrypted files are downloaded from cloud storage
-   - Files are decrypted locally before being restored to Cassandra
-   - Metadata files are copied directly without decryption
+   - Encrypted files are downloaded from cloud storage to a temporary location.
+   - Files are decrypted locally before being restored to the Cassandra data directory.
+   - Metadata files are copied directly without decryption.
 
 3. **Differential Backups**:
-   - The manifest stores both encrypted and original file metadata (`source_MD5`, `source_size`)
-   - This allows comparison with local files without decrypting remote files
-   - Reduces unnecessary uploads and improves backup efficiency
+   - The manifest stores both encrypted and original file metadata (`source_MD5`, `source_size`).
+   - This allows comparison with local files without decrypting remote files.
+   - Reduces unnecessary uploads and improves backup efficiency.
+
+## File Format
+
+The encrypted file format is designed to be simple and streamable. Each file consists of a sequence of encrypted chunks.
+
+For each 1MB chunk of the original file:
+1. The chunk is encrypted using Fernet.
+2. A **4-byte header** (big-endian integer) containing the length of the encrypted chunk is written to the output stream.
+3. The encrypted chunk bytes follow immediately.
+
+This structure allows for incremental decryption and random access (at chunk boundaries) if needed in the future, although Medusa currently processes files sequentially.
 
 ## Configuration
 
@@ -128,12 +139,13 @@ These metadata files must be accessible without decryption for backup discovery 
 ### Resource Usage
 
 - **CPU**: Encryption/decryption adds CPU overhead. Impact depends on backup size and concurrent transfers.
-- **Disk**: Temporary encrypted files are stored in `encryption_tmp_dir` during upload/download.
-  - Ensure sufficient disk space (at least `concurrent_transfers * largest_file_size`)
+- **Disk Space**:
+  - **S3 (AWS, Minio, etc.)**: Supports **streaming uploads**. Files are encrypted on-the-fly as they are uploaded, so no temporary disk space is required for the encrypted copy during backup.
+  - **Other Storage (GCS, Azure, Local)**: Currently requires temporary disk space. Medusa creates a temporary encrypted copy of each file before uploading it. Ensure `encryption_tmp_dir` has enough space (at least `concurrent_transfers * largest_file_size`).
+  - **Restore**: All storage backends require temporary disk space during restore. Encrypted files are downloaded to `encryption_tmp_dir` before being decrypted to the target directory.
 - **Memory**: Processing is chunked (1MB) to limit memory usage.
 
 ### Optimization
 
 - Adjust `concurrent_transfers` in `medusa.ini` to balance throughput and resource usage
 - Use dedicated `encryption_tmp_dir` on fast storage (SSD) for better performance
-

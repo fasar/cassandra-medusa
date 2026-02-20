@@ -198,13 +198,16 @@ class AbstractStorage(abc.ABC):
 
                 # Decrypt
                 # Offload decryption to executor to keep the loop responsive
-                await loop.run_in_executor(None, self._decrypt_chunk, manager, chunk, temp_dir, dest)
+                executor = getattr(self, 'executor', None)
+                await loop.run_in_executor(executor, self._decrypt_chunk, manager, chunk, temp_dir, dest)
 
     async def _download_encrypted_blobs_streaming(self, srcs, dest):
         loop = asyncio.get_running_loop()
         chunk_size = int(self.config.concurrent_transfers)
         srcs = [str(s) for s in srcs]
         chunks = [srcs[i:i + chunk_size] for i in range(0, len(srcs), chunk_size)]
+
+        executor = getattr(self, 'executor', None)
 
         for chunk in chunks:
             tasks = []
@@ -216,7 +219,7 @@ class AbstractStorage(abc.ABC):
                 else:
                     # Encrypted files are streamed and decrypted on the fly
                     tasks.append(loop.run_in_executor(
-                        None,
+                        executor,
                         self._download_and_decrypt_streaming,
                         src,
                         dest
@@ -225,7 +228,7 @@ class AbstractStorage(abc.ABC):
             await asyncio.gather(*tasks)
 
     def _download_and_decrypt_streaming(self, src, dest):
-        from medusa.storage.encryption import DecryptedStream
+        from medusa.storage.encryption import DecryptedStream, CHUNK_SIZE
 
         src_path = Path(src)
         dest_path = Path(AbstractStorage.path_maybe_with_parent(dest, src_path))
@@ -242,7 +245,7 @@ class AbstractStorage(abc.ABC):
         try:
             dec_stream = DecryptedStream(blob_stream, self.config.key_secret_base64)
             with open(dest_path, 'wb') as f_out:
-                shutil.copyfileobj(dec_stream, f_out)
+                shutil.copyfileobj(dec_stream, f_out, length=CHUNK_SIZE)
         except Exception as e:
             logging.error(f"Error streaming download/decrypt for {src}: {e}")
             # Clean up partial file
@@ -360,9 +363,11 @@ class AbstractStorage(abc.ABC):
         logging.debug(f"Using default file-spooling fallback for upload of {object_key}")
 
         encryption_tmp_dir = self.config.encryption_tmp_dir if hasattr(self.config, 'encryption_tmp_dir') else None
+        from medusa.storage.encryption import CHUNK_SIZE
+
         with tempfile.NamedTemporaryFile(dir=encryption_tmp_dir, delete=True) as tmp:
             # Spool stream to disk
-            shutil.copyfileobj(stream, tmp)
+            shutil.copyfileobj(stream, tmp, length=CHUNK_SIZE)
             tmp.flush()
             tmp.seek(0)
 

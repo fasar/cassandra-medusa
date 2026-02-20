@@ -19,7 +19,7 @@ import struct
 import logging
 import os
 import io
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 # Chunk size for reading/encrypting.
 # 1MB seems reasonable balance between memory usage and overhead.
@@ -285,8 +285,10 @@ class DecryptedStream(io.RawIOBase):
             # Decrypt
             try:
                 decrypted_chunk = self.fernet.decrypt(encrypted_chunk)
+            except InvalidToken as e:
+                raise IOError("Invalid encryption token or key mismatch") from e
             except Exception as e:
-                raise IOError(f"Decryption failed: {e}")
+                raise IOError("Decryption failed") from e
 
             self.source_size += len(decrypted_chunk)
             self.source_hash.update(decrypted_chunk)

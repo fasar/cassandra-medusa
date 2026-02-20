@@ -27,6 +27,7 @@ import os
 import shutil
 import typing as t
 import re
+import warnings
 
 from pathlib import Path
 from tenacity import retry, stop_after_attempt, wait_exponential, wait_fixed
@@ -365,9 +366,16 @@ class AbstractStorage(abc.ABC):
         encryption_tmp_dir = self.config.encryption_tmp_dir if hasattr(self.config, 'encryption_tmp_dir') else None
         from medusa.storage.encryption import CHUNK_SIZE
 
+        executor = getattr(self, 'executor', None)
+        loop = asyncio.get_running_loop()
+
         with tempfile.NamedTemporaryFile(dir=encryption_tmp_dir, delete=True) as tmp:
-            # Spool stream to disk
-            shutil.copyfileobj(stream, tmp, length=CHUNK_SIZE)
+            # Spool stream to disk in an executor to avoid blocking the event loop.
+            # Use functools.partial so the length keyword argument is preserved correctly.
+            import functools
+            await loop.run_in_executor(
+                executor, functools.partial(shutil.copyfileobj, stream, tmp, length=CHUNK_SIZE)
+            )
             tmp.flush()
             tmp.seek(0)
 
@@ -579,8 +587,18 @@ class AbstractStorage(abc.ABC):
     @staticmethod
     def get_or_create_event_loop() -> asyncio.AbstractEventLoop:
         try:
-            loop = asyncio.get_event_loop()
-        except Exception:
+            # When called from within a coroutine, return the running loop directly.
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        # We are in a synchronous context; get the policy loop or create a new one.
+        # Suppress DeprecationWarning emitted by get_event_loop() in Python 3.10+ when
+        # there is no current event loop set in the policy.
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                loop = asyncio.get_event_loop()
+        except RuntimeError:
             loop = None
         if loop is None or loop.is_closed():
             logging.warning("Having to make a new event loop unexpectedly")

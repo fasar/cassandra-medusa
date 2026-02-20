@@ -321,7 +321,7 @@ class S3BaseStorage(AbstractStorage):
         # boto has a connection pool, but it does not support the asyncio API
         # so we make things ugly and submit the whole download as a task to an executor
         # which allows us to download several files in parallel
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future = loop.run_in_executor(self.executor, self.__download_blob, src, dest)
         await future
 
@@ -424,7 +424,7 @@ class S3BaseStorage(AbstractStorage):
         }
         # we are going to combine asyncio with boto's threading
         # we do this by submitting the upload into an executor
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future = loop.run_in_executor(self.executor, self.__upload_file, upload_conf)
         # and then ask asyncio to yield until it completes
         mo = await future
@@ -470,7 +470,7 @@ class S3BaseStorage(AbstractStorage):
 
         # we are going to combine asyncio with boto's threading
         # we do this by submitting the upload into an executor
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future = loop.run_in_executor(self.executor, self.__upload_fileobj, upload_conf)
         # and then ask asyncio to yield until it completes
         mo = await future

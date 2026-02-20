@@ -129,6 +129,18 @@ class S3BaseStorage(AbstractStorage):
 
         super().__init__(config)
 
+    @property
+    def supports_streaming(self):
+        return True
+
+    def _get_blob_stream(self, blob_key: str) -> t.BinaryIO:
+        extra_args = {}
+        if self.sse_c_key is not None:
+            extra_args['SSECustomerAlgorithm'] = 'AES256'
+            extra_args['SSECustomerKey'] = self.sse_c_key
+
+        return self.s3_client.get_object(Bucket=self.bucket_name, Key=blob_key, **extra_args)['Body']
+
     def connect(self):
         logging.info(
             'Connecting to {} with args {}'.format(

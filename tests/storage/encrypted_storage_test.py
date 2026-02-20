@@ -19,7 +19,7 @@ import tempfile
 import pathlib
 import io
 import typing as t
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch, PropertyMock
 from cryptography.fernet import Fernet
 
 from medusa.storage.abstract_storage import AbstractStorage, ManifestObject, AbstractBlob
@@ -263,6 +263,38 @@ class EncryptedStorageTest(unittest.TestCase):
                 with open(final_file, "rb") as f:
                     self.assertEqual(f.read(), original_content, f"Content mismatch for {final_file}")
 
+    def test_download_encrypted_blobs_streaming(self):
+        # Enable streaming support using patch
+        with patch.object(MockStorage, 'supports_streaming', new_callable=PropertyMock) as mock_streaming:
+            mock_streaming.return_value = True
+
+            original_content = b"restored content via streaming"
+
+            # Create encrypted content in memory
+            src_stream = io.BytesIO(original_content)
+            from medusa.storage.encryption import EncryptedStream
+            enc_stream = EncryptedStream(src_stream, self.key)
+            encrypted_content = enc_stream.read()
+
+            # Mock _get_blob_stream to return the encrypted content
+            self.storage._get_blob_stream = MagicMock(return_value=io.BytesIO(encrypted_content))
+            # Also mock _download_blob so it doesn't try to download anything for streaming path
+            self.storage._download_blob = MagicMock()
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                srcs = ["backup/data/restored_stream.txt"]
+                dest = pathlib.Path(temp_dir) / "final_dest"
+
+                self.storage.download_blobs(srcs, dest)
+
+                final_file = dest / "restored_stream.txt"
+                self.assertTrue(final_file.exists())
+
+                with open(final_file, "rb") as f:
+                    self.assertEqual(f.read(), original_content)
+
+                self.storage._get_blob_stream.assert_called_with("backup/data/restored_stream.txt")
+                self.storage._download_blob.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

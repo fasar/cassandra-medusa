@@ -68,6 +68,17 @@ class AbstractStorage(abc.ABC):
         self.config = config
         self.bucket_name = config.bucket_name
 
+    @property
+    def supports_streaming(self):
+        return False
+
+    def _get_blob_stream(self, blob_key: str) -> t.BinaryIO:
+        """
+        Returns a file-like object for the blob.
+        This is used for streaming downloads.
+        """
+        raise NotImplementedError()
+
     @abc.abstractmethod
     def connect(self):
         raise NotImplementedError
@@ -165,6 +176,10 @@ class AbstractStorage(abc.ABC):
             loop.run_until_complete(self._download_blobs(srcs, dest))
 
     async def _download_encrypted_blobs(self, srcs, dest):
+        if self.supports_streaming:
+            await self._download_encrypted_blobs_streaming(srcs, dest)
+            return
+
         from medusa.storage.encryption import EncryptionManager
 
         manager = EncryptionManager(self.config.key_secret_base64)
@@ -184,6 +199,62 @@ class AbstractStorage(abc.ABC):
                 # Decrypt
                 # Offload decryption to executor to keep the loop responsive
                 await loop.run_in_executor(None, self._decrypt_chunk, manager, chunk, temp_dir, dest)
+
+    async def _download_encrypted_blobs_streaming(self, srcs, dest):
+        loop = asyncio.get_running_loop()
+        chunk_size = int(self.config.concurrent_transfers)
+        srcs = [str(s) for s in srcs]
+        chunks = [srcs[i:i + chunk_size] for i in range(0, len(srcs), chunk_size)]
+
+        for chunk in chunks:
+            tasks = []
+            for src in chunk:
+                src_path = Path(src)
+                # Plaintext files are handled by the regular download mechanism
+                if PLAINTEXT_FILES_REGEX.match(src_path.name):
+                    tasks.append(self._download_blob(src, dest))
+                else:
+                    # Encrypted files are streamed and decrypted on the fly
+                    tasks.append(loop.run_in_executor(
+                        None,
+                        self._download_and_decrypt_streaming,
+                        src,
+                        dest
+                    ))
+
+            await asyncio.gather(*tasks)
+
+    def _download_and_decrypt_streaming(self, src, dest):
+        from medusa.storage.encryption import DecryptedStream
+
+        src_path = Path(src)
+        dest_path = Path(AbstractStorage.path_maybe_with_parent(dest, src_path))
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        logging.debug(
+            '[Storage] Streaming download and decrypting {} -> {}'.format(
+                src, dest_path
+            )
+        )
+
+        blob_stream = self._get_blob_stream(src)
+
+        try:
+            dec_stream = DecryptedStream(blob_stream, self.config.key_secret_base64)
+            with open(dest_path, 'wb') as f_out:
+                shutil.copyfileobj(dec_stream, f_out)
+        except Exception as e:
+            logging.error(f"Error streaming download/decrypt for {src}: {e}")
+            # Clean up partial file
+            if dest_path.exists():
+                try:
+                    os.remove(dest_path)
+                except OSError:
+                    pass
+            raise
+        finally:
+            if hasattr(blob_stream, 'close'):
+                blob_stream.close()
 
     def _decrypt_chunk(self, manager, chunk, temp_dir, dest):
         for src in chunk:

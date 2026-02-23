@@ -291,10 +291,8 @@ class EncryptedStorageTest(unittest.TestCase):
             with open(final_file, "rb") as f:
                 self.assertEqual(f.read(), original_content)
 
-            self.storage._download_object_as_stream.assert_awaited_once_with(
-                "backup/data/restored_stream.txt"
-            )
-            self.storage._download_blob.assert_not_awaited()
+            self.storage._download_object_as_stream.assert_called_with("backup/data/restored_stream.txt")
+            self.storage._download_blob.assert_not_called()
 
     def test_download_encrypted_blobs_streaming_plaintext_file(self):
         # Verify that PLAINTEXT files are downloaded directly even when using streaming logic

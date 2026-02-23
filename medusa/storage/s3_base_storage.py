@@ -135,7 +135,7 @@ class S3BaseStorage(AbstractStorage):
             extra_args['SSECustomerAlgorithm'] = 'AES256'
             extra_args['SSECustomerKey'] = self.sse_c_key
 
-        loop = asyncio.get_running_loop()
+        loop = self.get_or_create_event_loop()
         executor = getattr(self, 'executor', None)
         return await loop.run_in_executor(executor, lambda: self.s3_client.get_object(Bucket=self.bucket_name, Key=blob_key, **extra_args)['Body'])
 

@@ -248,16 +248,16 @@ class AbstractStorage(abc.ABC):
 
         loop = asyncio.get_running_loop()
         executor = getattr(self, 'executor', None)
-        await loop.run_in_executor(executor, self._decrypt_stream_to_file, blob_stream, dest_path)
+        await loop.run_in_executor(executor, self._decrypt_stream_to_file, blob_stream, dest_path, src)
 
-    def _decrypt_stream_to_file(self, blob_stream, dest_path):
+    def _decrypt_stream_to_file(self, blob_stream, dest_path, src):
         from medusa.storage.encryption import DecryptedStream, CHUNK_SIZE
         try:
             dec_stream = DecryptedStream(blob_stream, self.config.key_secret_base64)
             with open(dest_path, 'wb') as f_out:
                 shutil.copyfileobj(dec_stream, f_out, length=CHUNK_SIZE)
         except Exception as e:
-            logging.error(f"Error streaming download/decrypt: {e}")
+            logging.error(f"Error streaming download/decrypt of {src} -> {dest_path}: {e}")
             if dest_path.exists():
                 try:
                     os.remove(dest_path)

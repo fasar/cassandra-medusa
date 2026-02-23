@@ -184,7 +184,7 @@ class AbstractStorage(abc.ABC):
         from medusa.storage.encryption import EncryptionManager
 
         manager = EncryptionManager(self.config.key_secret_base64)
-        loop = asyncio.get_running_loop()
+        loop = self.get_or_create_event_loop()
 
         chunk_size = int(self.config.concurrent_transfers)
         srcs = [str(s) for s in srcs]
@@ -203,7 +203,7 @@ class AbstractStorage(abc.ABC):
                 await loop.run_in_executor(executor, self._decrypt_chunk, manager, chunk, temp_dir, dest)
 
     async def _download_encrypted_blobs_streaming(self, srcs, dest):
-        loop = asyncio.get_running_loop()
+        loop = self.get_or_create_event_loop()
         chunk_size = int(self.config.concurrent_transfers)
         srcs = [str(s) for s in srcs]
         chunks = [srcs[i:i + chunk_size] for i in range(0, len(srcs), chunk_size)]
@@ -367,7 +367,7 @@ class AbstractStorage(abc.ABC):
         from medusa.storage.encryption import CHUNK_SIZE
 
         executor = getattr(self, 'executor', None)
-        loop = asyncio.get_running_loop()
+        loop = self.get_or_create_event_loop()
 
         with tempfile.NamedTemporaryFile(dir=encryption_tmp_dir, delete=True) as tmp:
             # Spool stream to disk in an executor to avoid blocking the event loop.

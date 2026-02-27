@@ -19,50 +19,43 @@ import struct
 import logging
 import os
 import io
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 
 # Chunk size for reading/encrypting.
 # 1MB seems reasonable balance between memory usage and overhead.
 CHUNK_SIZE = 1024 * 1024
-# Max reasonable chunk size (1MB + Fernet overhead + padding). Safety check.
+# Max reasonable chunk size (1MB + AES-GCM overhead).
+# Overhead = 12 bytes IV + 16 bytes Tag = 28 bytes.
 MAX_CHUNK_SIZE = 2 * 1024 * 1024
 
 
 class EncryptionManager:
-    """Manages encryption and decryption of backup files using Fernet symmetric encryption."""
+    """Manages encryption and decryption of backup files using AES-256-GCM symmetric encryption."""
 
     def __init__(self, key_secret_base64):
         if not key_secret_base64:
             raise ValueError("Encryption key is not provided")
 
         # Validate base64 encoding and key length
-        # Fernet uses URL-safe base64 encoding (44 chars for a 32-byte key)
         try:
             # Convert to bytes if string
             key_bytes = key_secret_base64 if isinstance(key_secret_base64, bytes) else key_secret_base64.encode('utf-8')
-            # Decode using URL-safe base64 (Fernet standard)
-            decoded_key = base64.urlsafe_b64decode(key_bytes)
+            # Decode using URL-safe base64 (which is also compatible with standard base64 if no URL-unsafe chars are used)
+            # This allows flexibility for the user.
+            self.key = base64.urlsafe_b64decode(key_bytes)
         except Exception as e:
             raise ValueError(
                 f"Encryption key is not properly base64-encoded. "
                 f"Please ensure the key is base64-encoded. Details: {e}"
             )
 
-        # Validate key length (Fernet requires exactly 32 bytes when decoded)
-        if len(decoded_key) != 32:
+        # Validate key length (AES-256 requires exactly 32 bytes)
+        if len(self.key) != 32:
             raise ValueError(
                 f"Encryption key has invalid length. "
-                f"Expected 32 bytes when base64-decoded, but got {len(decoded_key)} bytes. "
-                f"Generate a valid key using: "
-                f"python3 -c \"from cryptography.fernet import Fernet; "
-                f"print(Fernet.generate_key().decode())\""
+                f"Expected 32 bytes (256 bits) when base64-decoded, but got {len(self.key)} bytes. "
             )
-
-        try:
-            self.fernet = Fernet(key_secret_base64)
-        except Exception as e:
-            logging.error(f"Failed to initialize encryption with provided key: {e}")
-            raise ValueError(f"Failed to initialize encryption with provided key: {e}")
 
     def encrypt_file(self, src_path, dst_path):
         source_hash = hashlib.md5()
@@ -79,19 +72,33 @@ class EncryptionManager:
                 source_size += len(chunk)
                 source_hash.update(chunk)
 
-                encrypted_chunk = self.fernet.encrypt(chunk)
+                # Generate a unique IV (Nonce) for each chunk
+                iv = os.urandom(12)
 
-                # Write length of the encrypted chunk (4 bytes, big endian)
-                chunk_len = len(encrypted_chunk)
+                # Encrypt using AES-GCM
+                encryptor = Cipher(
+                    algorithms.AES(self.key),
+                    modes.GCM(iv),
+                    backend=default_backend()
+                ).encryptor()
+
+                ciphertext = encryptor.update(chunk) + encryptor.finalize()
+                tag = encryptor.tag
+
+                # The encrypted payload for this chunk is: IV + Ciphertext + Tag
+                encrypted_payload = iv + ciphertext + tag
+
+                # Write length of the encrypted payload (4 bytes, big endian)
+                chunk_len = len(encrypted_payload)
                 len_bytes = struct.pack('>I', chunk_len)
                 f_out.write(len_bytes)
-                # Write the encrypted chunk
-                f_out.write(encrypted_chunk)
+                # Write the encrypted payload
+                f_out.write(encrypted_payload)
 
                 encrypted_size += 4 + chunk_len
                 # For encrypted hash, we hash the exact bytes we write to disk
                 encrypted_hash.update(len_bytes)
-                encrypted_hash.update(encrypted_chunk)
+                encrypted_hash.update(encrypted_payload)
 
         return (
             base64.b64encode(encrypted_hash.digest()).decode('utf-8').strip(),
@@ -119,22 +126,51 @@ class EncryptionManager:
                         f"Header bytes: {header_hex}"
                     )
 
-                encrypted_chunk = f_in.read(chunk_len)
+                encrypted_payload = f_in.read(chunk_len)
 
-                if len(encrypted_chunk) != chunk_len:
+                if len(encrypted_payload) != chunk_len:
                     raise IOError(
                         f"Corrupted encrypted file: {src_path}. "
-                        f"Expected {chunk_len} bytes, got {len(encrypted_chunk)}"
+                        f"Expected {chunk_len} bytes, got {len(encrypted_payload)}"
                     )
 
-                decrypted_chunk = self.fernet.decrypt(encrypted_chunk)
+                # Parse the payload: [IV (12)][Ciphertext (len-28)][Tag (16)]
+                if len(encrypted_payload) < 28:
+                    raise IOError(f"Encrypted chunk too short in {src_path}")
+
+                iv = encrypted_payload[:12]
+                tag = encrypted_payload[-16:]
+                ciphertext = encrypted_payload[12:-16]
+
+                try:
+                    decryptor = Cipher(
+                        algorithms.AES(self.key),
+                        modes.GCM(iv, tag),
+                        backend=default_backend()
+                    ).decryptor()
+                    decrypted_chunk = decryptor.update(ciphertext) + decryptor.finalize()
+                except Exception as e:
+                    raise IOError("Decryption failed or integrity check failed") from e
+
                 f_out.write(decrypted_chunk)
 
 
 class EncryptionStreamBase(io.RawIOBase):
     def __init__(self, source_stream, key_secret_base64):
         self.source_stream = source_stream
-        self.fernet = Fernet(key_secret_base64)
+
+        if not key_secret_base64:
+            raise ValueError("Encryption key is not provided")
+
+        try:
+            key_bytes = key_secret_base64 if isinstance(key_secret_base64, bytes) else key_secret_base64.encode('utf-8')
+            self.key = base64.urlsafe_b64decode(key_bytes)
+        except Exception as e:
+            raise ValueError(f"Invalid base64 key: {e}")
+
+        if len(self.key) != 32:
+            raise ValueError(f"Invalid key length. Expected 32 bytes, got {len(self.key)}")
+
         self.source_hash = hashlib.md5()
         self.encrypted_hash = hashlib.md5()
         self.source_size = 0
@@ -184,20 +220,32 @@ class EncryptedStream(EncryptionStreamBase):
             self.source_size += len(chunk)
             self.source_hash.update(chunk)
 
-            encrypted_chunk = self.fernet.encrypt(chunk)
-            chunk_len = len(encrypted_chunk)
+            # Encrypt
+            iv = os.urandom(12)
+            encryptor = Cipher(
+                algorithms.AES(self.key),
+                modes.GCM(iv),
+                backend=default_backend()
+            ).encryptor()
+
+            ciphertext = encryptor.update(chunk) + encryptor.finalize()
+            tag = encryptor.tag
+
+            encrypted_payload = iv + ciphertext + tag
+
+            chunk_len = len(encrypted_payload)
             len_bytes = struct.pack('>I', chunk_len)
 
             # Important: Write to the buffer at the *end*, but preserve the current read position
             current_pos = self.buffer.tell()
             self.buffer.seek(0, io.SEEK_END)
             self.buffer.write(len_bytes)
-            self.buffer.write(encrypted_chunk)
+            self.buffer.write(encrypted_payload)
             self.buffer.seek(current_pos)
 
             self.encrypted_size += 4 + chunk_len
             self.encrypted_hash.update(len_bytes)
-            self.encrypted_hash.update(encrypted_chunk)
+            self.encrypted_hash.update(encrypted_payload)
 
         data = self.buffer.read(size)
 
@@ -259,20 +307,30 @@ class DecryptedStream(EncryptionStreamBase):
                     f"Chunk length {chunk_len} exceeds max {MAX_CHUNK_SIZE}."
                 )
 
-            # Read the encrypted chunk
-            encrypted_chunk = self._read_from_source(chunk_len)
-            if len(encrypted_chunk) != chunk_len:
-                raise IOError(f"Incomplete encrypted chunk. Expected {chunk_len} bytes, got {len(encrypted_chunk)}")
+            # Read the encrypted payload
+            encrypted_payload = self._read_from_source(chunk_len)
+            if len(encrypted_payload) != chunk_len:
+                raise IOError(f"Incomplete encrypted chunk. Expected {chunk_len} bytes, got {len(encrypted_payload)}")
 
             self.encrypted_size += 4 + chunk_len
             self.encrypted_hash.update(len_bytes)
-            self.encrypted_hash.update(encrypted_chunk)
+            self.encrypted_hash.update(encrypted_payload)
+
+            if len(encrypted_payload) < 28:
+                raise IOError("Encrypted chunk too short")
+
+            iv = encrypted_payload[:12]
+            tag = encrypted_payload[-16:]
+            ciphertext = encrypted_payload[12:-16]
 
             # Decrypt
             try:
-                decrypted_chunk = self.fernet.decrypt(encrypted_chunk)
-            except InvalidToken as e:
-                raise IOError("Invalid encryption token or key mismatch") from e
+                decryptor = Cipher(
+                    algorithms.AES(self.key),
+                    modes.GCM(iv, tag),
+                    backend=default_backend()
+                ).decryptor()
+                decrypted_chunk = decryptor.update(ciphertext) + decryptor.finalize()
             except Exception as e:
                 raise IOError("Decryption failed") from e
 

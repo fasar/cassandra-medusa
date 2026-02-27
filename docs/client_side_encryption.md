@@ -12,7 +12,7 @@ This provides an additional layer of security, ensuring that data is encrypted i
 When client-side encryption is enabled:
 
 1. **During Backup**:
-   - SSTable files are encrypted locally using Fernet symmetric encryption.
+   - SSTable files are encrypted locally using **AES-256-GCM** (Authenticated Encryption).
    - Each file is processed in 1MB chunks to manage memory usage.
    - Encrypted files are uploaded to cloud storage.
    - Metadata files (`manifest.json`, `schema.cql`, etc.) remain unencrypted for compatibility.
@@ -32,20 +32,19 @@ When client-side encryption is enabled:
 The encrypted file format is designed to be simple and streamable. Each file consists of a sequence of encrypted chunks.
 
 For each 1MB chunk of the original file:
-1. The chunk is encrypted using Fernet.
-2. A **4-byte header** (big-endian integer) containing the length of the encrypted chunk is written to the output stream.
-3. The encrypted chunk bytes follow immediately.
-
-This structure allows for incremental decryption and random access (at chunk boundaries) if needed in the future, although Medusa currently processes files sequentially.
+1. A unique 12-byte IV (Nonce) is generated.
+2. The chunk is encrypted using AES-256-GCM.
+3. A **4-byte header** (big-endian integer) containing the length of the *encrypted payload* is written to the output stream.
+4. The encrypted payload is written: `[IV (12 bytes)] [Ciphertext] [Tag (16 bytes)]`.
 
 ## Configuration
 
 ### Encryption Key Generation
 
-Generate a Fernet-compatible 32-byte key:
+Generate a 32-byte (256-bit) random key and base64-encode it:
 
 ```bash
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+python3 -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
 ```
 
 This will output a base64-encoded key like:
@@ -139,7 +138,7 @@ These metadata files must be accessible without decryption for backup discovery 
 
 ### Resource Usage
 
-- **CPU**: Encryption/decryption adds CPU overhead. Impact depends on backup size and concurrent transfers.
+- **CPU**: Encryption/decryption adds CPU overhead. AES-GCM is generally efficient on modern CPUs with AES-NI support.
 - **Disk**: Temporary encrypted files are stored in `encryption_tmp_dir` during upload/download.
   - Ensure sufficient disk space (at least `concurrent_transfers * largest_file_size`)
   - **S3**: S3 storage supports streaming for encryption and decryption. Temporary files are **not** created when using S3.

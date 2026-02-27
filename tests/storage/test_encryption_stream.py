@@ -20,13 +20,14 @@ import os
 import io
 import shutil
 import tempfile
-from cryptography.fernet import Fernet
 from medusa.storage.encryption import EncryptionManager, EncryptedStream, DecryptedStream
 
 
 class EncryptedStreamTest(unittest.TestCase):
     def setUp(self):
-        self.key = Fernet.generate_key()
+        # AES-256 key
+        self.raw_key = os.urandom(32)
+        self.key = base64.urlsafe_b64encode(self.raw_key).decode('utf-8')
         self.manager = EncryptionManager(self.key)
         self.temp_dir = tempfile.mkdtemp()
 
@@ -48,12 +49,13 @@ class EncryptedStreamTest(unittest.TestCase):
         base64_source_md5_file = base64.b64encode(source_md5_file).decode('utf-8').strip()
 
         # 2. Encrypt using the stream-based method
-        # Since Fernet uses a random IV (salt) for each encryption call,
-        # We must decrypt the stream output and verify it matches the original content.
+        # Note: AES-GCM uses random IVs, so encrypting twice produces different ciphertexts.
+        # We verify by decrypting the stream output.
         with open(src_path, "rb") as f:
             stream = EncryptedStream(f, self.key)
             stream_encrypted_content = stream.read()
-        # Decrypt the stream output
+
+        # Decrypt the stream output using manager
         temp_stream_out = os.path.join(self.temp_dir, "stream_output.enc")
         with open(temp_stream_out, "wb") as f:
             f.write(stream_encrypted_content)
@@ -71,14 +73,13 @@ class EncryptedStreamTest(unittest.TestCase):
         self.assertEqual(stream.md5_source, base64_source_md5_file)
         self.assertEqual(stream.encrypted_size, len(stream_encrypted_content))
 
-        # We can't compare encrypted MD5s, but we can verify the stream reported MD5 matches the actual stream output
         encrypted_md5_file = hashlib.md5(stream_encrypted_content).digest()
         base64_encrypted_md5_file = base64.b64encode(encrypted_md5_file).decode('utf-8').strip()
         self.assertEqual(stream.md5_encrypted, base64_encrypted_md5_file)
 
     def test_chunked_read(self):
         """Verify reading in small chunks works correctly"""
-        content = b"1234567890" * 100000  # 1MB
+        content = b"1234567890" * 10000  # ~100KB
         src_stream = io.BytesIO(content)
         stream = EncryptedStream(src_stream, self.key)
 
@@ -117,7 +118,8 @@ class EncryptedStreamTest(unittest.TestCase):
 
 class DecryptedStreamTest(unittest.TestCase):
     def setUp(self):
-        self.key = Fernet.generate_key()
+        self.raw_key = os.urandom(32)
+        self.key = base64.urlsafe_b64encode(self.raw_key).decode('utf-8')
         self.manager = EncryptionManager(self.key)
         self.temp_dir = tempfile.mkdtemp()
 
@@ -153,7 +155,7 @@ class DecryptedStreamTest(unittest.TestCase):
 
     def test_chunked_read_decryption(self):
         """Verify reading decrypted stream in small chunks"""
-        content = b"1234567890" * 100000  # 1MB
+        content = b"1234567890" * 10000  # ~100KB
         src_stream = io.BytesIO(content)
         enc_stream = EncryptedStream(src_stream, self.key)
         encrypted_content = enc_stream.read()
@@ -171,13 +173,14 @@ class DecryptedStreamTest(unittest.TestCase):
         self.assertEqual(read_content, content)
 
     def test_corrupted_stream(self):
-        # Truncate encrypted content to create invalid length prefix
-        content = b"data"
+        content = b"data" * 100
         src_stream = io.BytesIO(content)
         enc_stream = EncryptedStream(src_stream, self.key)
         encrypted_content = enc_stream.read()
 
-        # Truncate to damage the encrypted chunk
+        # Truncate to damage the encrypted chunk payload (removing tag or ciphertext)
+        # The encrypted format is [4 bytes len][12 bytes IV][Ciphertext][16 bytes Tag]
+        # Total overhead is 4+12+16 = 32 bytes minimum.
         truncated_content = encrypted_content[:-1]
 
         dec_stream = DecryptedStream(io.BytesIO(truncated_content), self.key)

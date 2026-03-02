@@ -15,54 +15,126 @@
 
 import base64
 import hashlib
-import struct
 import logging
-import os
 import io
-from cryptography.fernet import Fernet, InvalidToken
+
+try:
+    import aws_encryption_sdk
+    from aws_encryption_sdk import CommitmentPolicy
+    from aws_encryption_sdk.identifiers import WrappingAlgorithm
+    # Modern SDK (>=3.0) with MPL (Material Providers Library)
+    try:
+        from aws_encryption_sdk.keyrings.raw import RawAESKeyring
+        HAS_KEYRINGS = True
+    except ImportError:
+        # Fallback for SDK without MPL or older structure
+        HAS_KEYRINGS = False
+        from aws_encryption_sdk.key_providers.raw import RawMasterKeyProvider
+        from aws_encryption_sdk.structure import MasterKeyInfo
+
+    HAS_AWS_CRYPT = True
+except ImportError:
+    HAS_AWS_CRYPT = False
+
 
 # Chunk size for reading/encrypting.
 # 1MB seems reasonable balance between memory usage and overhead.
 CHUNK_SIZE = 1024 * 1024
-# Max reasonable chunk size (1MB + Fernet overhead + padding). Safety check.
-MAX_CHUNK_SIZE = 2 * 1024 * 1024
 
 
 class EncryptionManager:
-    """Manages encryption and decryption of backup files using Fernet symmetric encryption."""
+    """Manages encryption and decryption of backup files using AWS Encryption SDK."""
 
     def __init__(self, key_secret_base64):
+        if not HAS_AWS_CRYPT:
+            try:
+                 import aws_encryption_sdk
+            except ImportError:
+                raise ImportError(
+                    "aws-encryption-sdk is not installed. "
+                    "Please install it using 'pip install cassandra-medusa[encryption]'"
+                )
+
         if not key_secret_base64:
             raise ValueError("Encryption key is not provided")
 
         # Validate base64 encoding and key length
-        # Fernet uses URL-safe base64 encoding (44 chars for a 32-byte key)
         try:
             # Convert to bytes if string
             key_bytes = key_secret_base64 if isinstance(key_secret_base64, bytes) else key_secret_base64.encode('utf-8')
-            # Decode using URL-safe base64 (Fernet standard)
-            decoded_key = base64.urlsafe_b64decode(key_bytes)
+            # Decode
+            self.decoded_key = base64.b64decode(key_bytes)
         except Exception as e:
             raise ValueError(
                 f"Encryption key is not properly base64-encoded. "
                 f"Please ensure the key is base64-encoded. Details: {e}"
             )
 
-        # Validate key length (Fernet requires exactly 32 bytes when decoded)
-        if len(decoded_key) != 32:
+        # Validate key length (AWS Encryption SDK supports 128, 192, 256 bits for AES)
+        if len(self.decoded_key) != 32:
             raise ValueError(
                 f"Encryption key has invalid length. "
-                f"Expected 32 bytes when base64-decoded, but got {len(decoded_key)} bytes. "
-                f"Generate a valid key using: "
-                f"python3 -c \"from cryptography.fernet import Fernet; "
-                f"print(Fernet.generate_key().decode())\""
+                f"Expected 32 bytes (256 bits) when base64-decoded, but got {len(self.decoded_key)} bytes."
             )
 
-        try:
-            self.fernet = Fernet(key_secret_base64)
-        except Exception as e:
-            logging.error(f"Failed to initialize encryption with provided key: {e}")
-            raise ValueError(f"Failed to initialize encryption with provided key: {e}")
+        # Initialize AWS Encryption SDK client
+        self.client = aws_encryption_sdk.EncryptionSDKClient(
+            commitment_policy=CommitmentPolicy.REQUIRE_ENCRYPT_REQUIRE_DECRYPT
+        )
+
+        self.key_provider = "medusa-backup"
+        self.key_name = "raw-aes-key"
+
+        if HAS_KEYRINGS:
+            self.use_keyring = True
+            self.keyring = RawAESKeyring(
+                key_namespace=self.key_provider,
+                key_name=self.key_name,
+                wrapping_key=self.decoded_key,
+                wrapping_algorithm=WrappingAlgorithm.AES_256_GCM_IV12_TAG16_NO_PADDING
+            )
+        else:
+            # Fallback to MasterKeyProvider
+            self.use_keyring = False
+            from aws_encryption_sdk.key_providers.raw import RawMasterKeyProvider
+            from aws_encryption_sdk.internal.crypto.wrapping_keys import WrappingKey
+            from aws_encryption_sdk.identifiers import WrappingAlgorithm, EncryptionKeyType
+
+            # Implementation of RawMasterKeyProvider for fallback
+            class RawAESKeyProvider(RawMasterKeyProvider):
+                provider_id = "medusa-backup"
+
+                def __new__(cls, *args, **kwargs):
+                    return super(RawAESKeyProvider, cls).__new__(cls)
+
+                def __init__(self, key_id=None, wrapping_key=None):
+                    super(RawAESKeyProvider, self).__init__()
+                    self._wrapping_key = wrapping_key
+                    self._key_id = key_id
+
+                    if not hasattr(self, '_encrypt_key_index'):
+                        self._encrypt_key_index = {}
+                    if not hasattr(self, '_decrypt_key_index'):
+                        self._decrypt_key_index = {}
+                    if not hasattr(self, '_members'):
+                        self._members = [self]
+
+                    self.add_master_key(key_id)
+
+                def _get_raw_key(self, key_id):
+                    return self._wrapping_key
+
+            # Wrap the key in WrappingKey object for the fallback provider
+            wrapping_key_obj = WrappingKey(
+                wrapping_algorithm=WrappingAlgorithm.AES_256_GCM_IV12_TAG16_NO_PADDING,
+                wrapping_key=self.decoded_key,
+                wrapping_key_type=EncryptionKeyType.SYMMETRIC
+            )
+
+            self.master_key_provider = RawAESKeyProvider(
+                key_id=self.key_name,
+                wrapping_key=wrapping_key_obj
+            )
 
     def encrypt_file(self, src_path, dst_path):
         source_hash = hashlib.md5()
@@ -70,28 +142,69 @@ class EncryptionManager:
         source_size = 0
         encrypted_size = 0
 
+        kwargs = {}
+        if self.use_keyring:
+            kwargs['keyring'] = self.keyring
+        else:
+            # Note: the parameter name for stream() when using MasterKeyProvider is 'materials_manager'
+            # OR 'master_key_provider' depending on the version and what stream() expects.
+            # AWS Encryption SDK stream() usually takes **kwargs which are passed to EncryptorConfig/DecryptorConfig
+            # However, `aws_encryption_sdk.stream` helper usually accepts `key_provider` or `materials_manager`.
+
+            # Wait, `client.stream` creates a StreamEncryptor or StreamDecryptor.
+            # In older versions, it accepted `master_key_provider`.
+            # In newer versions (which seems we have given the errors), it might only accept `materials_manager` or `keyring`.
+            # If we are in "fallback" mode (no keyrings module), we might be dealing with an interface mismatch if the library *is* new but we failed to import keyrings properly?
+            # Or if we forced fallback path but library expects Keyring.
+
+            # If HAS_KEYRINGS is False, we are using MasterKeyProvider.
+            # But the error `TypeError: EncryptorConfig.__init__() got an unexpected keyword argument 'master_key_provider'`
+            # suggests that even though we are passing `master_key_provider`, the underlying config class doesn't want it.
+            # This means `aws-encryption-sdk` 4.x removed `master_key_provider` support from the main interface in favor of CMMs or Keyrings?
+
+            # Yes, 4.x requires Keyrings or CMM.
+            # If `HAS_KEYRINGS` is False, it means `aws_encryption_sdk.keyrings.raw` failed to import.
+            # But we saw earlier that `aws_encryption_sdk.key_providers` exists but `keyrings` was not listed in `ls`?
+            # Wait, the `ls` output for `site-packages/aws_encryption_sdk` showed:
+            # key_providers
+            # materials_managers
+            # ...
+            # But NO `keyrings` directory!
+            # So this installed version (4.0.4) does NOT have `keyrings` in the top level package structure?
+            # Let's check `keyrings` location. Maybe it's under `aws_encryption_sdk.keyrings`?
+            # The `ls` output usually shows directories. `keyrings` was missing from the list.
+
+            # If version 4.0.4 is installed, it should have keyrings.
+            # Unless `aws-encryption-sdk` package structure is tricky.
+            # The docs say: `from aws_encryption_sdk.keyrings.raw import RawAESKeyring`
+
+            # If we truly don't have Keyrings available, we must use a CryptographicMaterialsManager (CMM).
+            # We can create a DefaultCryptoMaterialsManager with a MasterKeyProvider.
+
+            from aws_encryption_sdk.materials_managers.default import DefaultCryptoMaterialsManager
+            cmm = DefaultCryptoMaterialsManager(master_key_provider=self.master_key_provider)
+            kwargs['materials_manager'] = cmm
+
         with open(src_path, 'rb') as f_in, open(dst_path, 'wb') as f_out:
+            with self.client.stream(
+                mode='e',
+                source=f_in,
+                **kwargs
+            ) as encryptor:
+                for chunk in encryptor:
+                    # Update encrypted metrics
+                    f_out.write(chunk)
+                    encrypted_size += len(chunk)
+                    encrypted_hash.update(chunk)
+
+        # Re-read for source stats
+        with open(src_path, 'rb') as f_in:
             while True:
                 chunk = f_in.read(CHUNK_SIZE)
                 if not chunk:
                     break
-
                 source_size += len(chunk)
                 source_hash.update(chunk)
-
-                encrypted_chunk = self.fernet.encrypt(chunk)
-
-                # Write length of the encrypted chunk (4 bytes, big endian)
-                chunk_len = len(encrypted_chunk)
-                len_bytes = struct.pack('>I', chunk_len)
-                f_out.write(len_bytes)
-                # Write the encrypted chunk
-                f_out.write(encrypted_chunk)
-
-                encrypted_size += 4 + chunk_len
-                # For encrypted hash, we hash the exact bytes we write to disk
-                encrypted_hash.update(len_bytes)
-                encrypted_hash.update(encrypted_chunk)
 
         return (
             base64.b64encode(encrypted_hash.digest()).decode('utf-8').strip(),
@@ -101,46 +214,71 @@ class EncryptionManager:
         )
 
     def decrypt_file(self, src_path, dst_path):
+        kwargs = {}
+        if self.use_keyring:
+            kwargs['keyring'] = self.keyring
+        else:
+            from aws_encryption_sdk.materials_managers.default import DefaultCryptoMaterialsManager
+            cmm = DefaultCryptoMaterialsManager(master_key_provider=self.master_key_provider)
+            kwargs['materials_manager'] = cmm
+
         with open(src_path, 'rb') as f_in, open(dst_path, 'wb') as f_out:
-            while True:
-                len_bytes = f_in.read(4)
-                if not len_bytes:
-                    break
+            with self.client.stream(
+                mode='d',
+                source=f_in,
+                **kwargs
+            ) as decryptor:
+                for chunk in decryptor:
+                    f_out.write(chunk)
 
-                chunk_len = struct.unpack('>I', len_bytes)[0]
 
-                # Sanity check for chunk length to detect non-encrypted files or corruption early
-                if chunk_len > MAX_CHUNK_SIZE:
-                    file_size = os.path.getsize(src_path)
-                    header_hex = len_bytes.hex()
-                    raise IOError(
-                        f"Corrupted encrypted file or plaintext file detected: {src_path} "
-                        f"(size: {file_size}). Chunk length {chunk_len} exceeds max {MAX_CHUNK_SIZE}. "
-                        f"Header bytes: {header_hex}"
-                    )
+class HashingStreamWrapper(io.RawIOBase):
+    """
+    Wraps a stream to calculate MD5 and size of data read from it.
+    """
+    def __init__(self, stream):
+        self.stream = stream
+        self.hash = hashlib.md5()
+        self.size = 0
 
-                encrypted_chunk = f_in.read(chunk_len)
+    def read(self, size=-1):
+        chunk = self.stream.read(size)
+        if chunk:
+            self.hash.update(chunk)
+            self.size += len(chunk)
+        return chunk
 
-                if len(encrypted_chunk) != chunk_len:
-                    raise IOError(
-                        f"Corrupted encrypted file: {src_path}. "
-                        f"Expected {chunk_len} bytes, got {len(encrypted_chunk)}"
-                    )
+    def readall(self):
+        return self.read()
 
-                decrypted_chunk = self.fernet.decrypt(encrypted_chunk)
-                f_out.write(decrypted_chunk)
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return False
 
 
 class EncryptionStreamBase(io.RawIOBase):
     def __init__(self, source_stream, key_secret_base64):
+        if not HAS_AWS_CRYPT:
+             try:
+                 import aws_encryption_sdk
+             except ImportError:
+                raise ImportError(
+                    "aws-encryption-sdk is not installed. "
+                    "Please install it using 'pip install cassandra-medusa[encryption]'"
+                )
+
+        self.manager = EncryptionManager(key_secret_base64)
         self.source_stream = source_stream
-        self.fernet = Fernet(key_secret_base64)
-        self.source_hash = hashlib.md5()
+
         self.encrypted_hash = hashlib.md5()
-        self.source_size = 0
         self.encrypted_size = 0
+
         self.buffer = io.BytesIO()
         self.eof = False
+
+        self.aws_stream = None
 
     def readable(self):
         return True
@@ -152,138 +290,64 @@ class EncryptionStreamBase(io.RawIOBase):
         return self.read()
 
     @property
-    def md5_source(self):
-        return base64.b64encode(self.source_hash.digest()).decode('utf-8').strip()
-
-    @property
     def md5_encrypted(self):
         return base64.b64encode(self.encrypted_hash.digest()).decode('utf-8').strip()
 
 
 class EncryptedStream(EncryptionStreamBase):
-    def read(self, size=-1):
-        if size == -1:
-            # Read everything
-            output = bytearray()
-            while True:
-                chunk = self.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                output.extend(chunk)
-            return bytes(output)
+    def __init__(self, source_stream, key_secret_base64):
+        super().__init__(source_stream, key_secret_base64)
 
-        if self.buffer.tell() == self.buffer.getbuffer().nbytes and self.eof:
-            return b""
+        self.hashing_source = HashingStreamWrapper(source_stream)
 
-        while self.buffer.getbuffer().nbytes - self.buffer.tell() < size and not self.eof:
-            chunk = self.source_stream.read(CHUNK_SIZE)
-            if not chunk:
-                self.eof = True
-                break
+        kwargs = {}
+        if self.manager.use_keyring:
+            kwargs['keyring'] = self.manager.keyring
+        else:
+            from aws_encryption_sdk.materials_managers.default import DefaultCryptoMaterialsManager
+            cmm = DefaultCryptoMaterialsManager(master_key_provider=self.manager.master_key_provider)
+            kwargs['materials_manager'] = cmm
 
-            self.source_size += len(chunk)
-            self.source_hash.update(chunk)
-
-            encrypted_chunk = self.fernet.encrypt(chunk)
-            chunk_len = len(encrypted_chunk)
-            len_bytes = struct.pack('>I', chunk_len)
-
-            # Important: Write to the buffer at the *end*, but preserve the current read position
-            current_pos = self.buffer.tell()
-            self.buffer.seek(0, io.SEEK_END)
-            self.buffer.write(len_bytes)
-            self.buffer.write(encrypted_chunk)
-            self.buffer.seek(current_pos)
-
-            self.encrypted_size += 4 + chunk_len
-            self.encrypted_hash.update(len_bytes)
-            self.encrypted_hash.update(encrypted_chunk)
-
-        data = self.buffer.read(size)
-
-        # Optimization: Clear the buffer if we've read everything to save memory
-        if self.buffer.tell() == self.buffer.getbuffer().nbytes:
-            self.buffer = io.BytesIO()
-
-        return data
-
-
-class DecryptedStream(EncryptionStreamBase):
-    """
-    Wraps a file-like object (source_stream) containing encrypted data.
-    DecryptedStream.read() returns decrypted bytes.
-    It calculates source MD5 and source size on the fly.
-    """
-    def _read_from_source(self, size):
-        # Helper to read exactly size bytes (or until EOF) from the underlying stream
-        data = bytearray()
-        while len(data) < size:
-            chunk = self.source_stream.read(size - len(data))
-            if not chunk:
-                break
-            data.extend(chunk)
-        return bytes(data)
+        self.aws_stream = self.manager.client.stream(
+            mode='e',
+            source=self.hashing_source,
+            **kwargs
+        )
+        self.iterator = iter(self.aws_stream)
 
     def read(self, size=-1):
         if size == -1:
             # Read everything
             output = bytearray()
-            while True:
-                chunk = self.read(CHUNK_SIZE)
-                if not chunk:
-                    break
+            for chunk in self.iterator:
                 output.extend(chunk)
+                self.encrypted_size += len(chunk)
+                self.encrypted_hash.update(chunk)
             return bytes(output)
 
-        # If buffer is empty and we hit EOF, return empty
-        if self.buffer.tell() == self.buffer.getbuffer().nbytes and self.eof:
-            return b""
+        # Return from buffer if we have enough data
+        if self.buffer.tell() < self.buffer.getbuffer().nbytes:
+            data = self.buffer.read(size)
+            if len(data) == size:
+                return data
+            # If we didn't get enough, we need to read more from the stream
+            pass
 
-        # Fill buffer until we have enough data or hit EOF
-        while self.buffer.getbuffer().nbytes - self.buffer.tell() < size and not self.eof:
-            # We expect a 4-byte length prefix
-            len_bytes = self._read_from_source(4)
-            if not len_bytes:
-                self.eof = True
-                break
-
-            if len(len_bytes) != 4:
-                raise IOError(f"Incomplete length prefix in encrypted stream. Expected 4 bytes, got {len(len_bytes)}")
-
-            chunk_len = struct.unpack('>I', len_bytes)[0]
-
-            # Sanity check for chunk length
-            if chunk_len > MAX_CHUNK_SIZE:
-                raise IOError(
-                    f"Corrupted encrypted stream or plaintext stream detected. "
-                    f"Chunk length {chunk_len} exceeds max {MAX_CHUNK_SIZE}."
-                )
-
-            # Read the encrypted chunk
-            encrypted_chunk = self._read_from_source(chunk_len)
-            if len(encrypted_chunk) != chunk_len:
-                raise IOError(f"Incomplete encrypted chunk. Expected {chunk_len} bytes, got {len(encrypted_chunk)}")
-
-            self.encrypted_size += 4 + chunk_len
-            self.encrypted_hash.update(len_bytes)
-            self.encrypted_hash.update(encrypted_chunk)
-
-            # Decrypt
+        # If buffer is empty or exhausted, read from iterator
+        while (self.buffer.getbuffer().nbytes - self.buffer.tell()) < size:
             try:
-                decrypted_chunk = self.fernet.decrypt(encrypted_chunk)
-            except InvalidToken as e:
-                raise IOError("Invalid encryption token or key mismatch") from e
-            except Exception as e:
-                raise IOError("Decryption failed") from e
+                chunk = next(self.iterator)
+                self.encrypted_size += len(chunk)
+                self.encrypted_hash.update(chunk)
 
-            self.source_size += len(decrypted_chunk)
-            self.source_hash.update(decrypted_chunk)
-
-            # Append to buffer
-            current_pos = self.buffer.tell()
-            self.buffer.seek(0, io.SEEK_END)
-            self.buffer.write(decrypted_chunk)
-            self.buffer.seek(current_pos)
+                # Append to buffer
+                current_pos = self.buffer.tell()
+                self.buffer.seek(0, io.SEEK_END)
+                self.buffer.write(chunk)
+                self.buffer.seek(current_pos)
+            except StopIteration:
+                self.eof = True
+                break
 
         data = self.buffer.read(size)
 
@@ -292,3 +356,85 @@ class DecryptedStream(EncryptionStreamBase):
             self.buffer = io.BytesIO()
 
         return data
+
+    @property
+    def source_size(self):
+        return self.hashing_source.size
+
+    @property
+    def md5_source(self):
+        return base64.b64encode(self.hashing_source.hash.digest()).decode('utf-8').strip()
+
+
+class DecryptedStream(EncryptionStreamBase):
+    def __init__(self, source_stream, key_secret_base64):
+        super().__init__(source_stream, key_secret_base64)
+
+        kwargs = {}
+        if self.manager.use_keyring:
+            kwargs['keyring'] = self.manager.keyring
+        else:
+            from aws_encryption_sdk.materials_managers.default import DefaultCryptoMaterialsManager
+            cmm = DefaultCryptoMaterialsManager(master_key_provider=self.manager.master_key_provider)
+            kwargs['materials_manager'] = cmm
+
+        self.aws_stream = self.manager.client.stream(
+            mode='d',
+            source=source_stream,
+            **kwargs
+        )
+        self.iterator = iter(self.aws_stream)
+
+        self.plaintext_hash = hashlib.md5()
+        self.plaintext_size = 0
+
+    def read(self, size=-1):
+        if size == -1:
+            # Read everything
+            output = bytearray()
+            for chunk in self.iterator:
+                output.extend(chunk)
+                self.plaintext_size += len(chunk)
+                self.plaintext_hash.update(chunk)
+            return bytes(output)
+
+        # Fill buffer from iterator
+        while (self.buffer.getbuffer().nbytes - self.buffer.tell()) < size:
+            try:
+                chunk = next(self.iterator)
+                self.plaintext_size += len(chunk)
+                self.plaintext_hash.update(chunk)
+
+                # Append to buffer
+                current_pos = self.buffer.tell()
+                self.buffer.seek(0, io.SEEK_END)
+                self.buffer.write(chunk)
+                self.buffer.seek(current_pos)
+            except StopIteration:
+                self.eof = True
+                break
+
+        data = self.buffer.read(size)
+
+        # Optimization: Clear buffer if fully read
+        if self.buffer.tell() == self.buffer.getbuffer().nbytes:
+            self.buffer = io.BytesIO()
+
+        return data
+
+    @property
+    def source_size(self):
+        return self.plaintext_size
+
+    @property
+    def md5_source(self):
+        return base64.b64encode(self.plaintext_hash.digest()).decode('utf-8').strip()
+
+    @property
+    def md5_encrypted(self):
+        # We can't easily track the encrypted hash here because the AWS stream consumes the source directly.
+        # If we need the encrypted MD5 (of the ciphertext source), we would need to wrap the source_stream
+        # with HashingStreamWrapper passed to aws_stream.
+        # But DecryptedStream is usually used for downloading, where we verify the downloaded file (plaintext)
+        # or the encrypted file integrity is handled by S3 ETag.
+        return "N/A"

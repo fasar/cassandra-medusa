@@ -15,7 +15,7 @@
 
 import base64
 import hashlib
-import logging
+
 import io
 
 try:
@@ -29,8 +29,7 @@ try:
     except ImportError:
         # Fallback for SDK without MPL or older structure
         HAS_KEYRINGS = False
-        from aws_encryption_sdk.key_providers.raw import RawMasterKeyProvider
-        from aws_encryption_sdk.structure import MasterKeyInfo
+
 
     HAS_AWS_CRYPT = True
 except ImportError:
@@ -146,41 +145,11 @@ class EncryptionManager:
         if self.use_keyring:
             kwargs['keyring'] = self.keyring
         else:
-            # Note: the parameter name for stream() when using MasterKeyProvider is 'materials_manager'
-            # OR 'master_key_provider' depending on the version and what stream() expects.
-            # AWS Encryption SDK stream() usually takes **kwargs which are passed to EncryptorConfig/DecryptorConfig
-            # However, `aws_encryption_sdk.stream` helper usually accepts `key_provider` or `materials_manager`.
-
-            # Wait, `client.stream` creates a StreamEncryptor or StreamDecryptor.
-            # In older versions, it accepted `master_key_provider`.
-            # In newer versions (which seems we have given the errors), it might only accept `materials_manager` or `keyring`.
-            # If we are in "fallback" mode (no keyrings module), we might be dealing with an interface mismatch if the library *is* new but we failed to import keyrings properly?
-            # Or if we forced fallback path but library expects Keyring.
-
-            # If HAS_KEYRINGS is False, we are using MasterKeyProvider.
-            # But the error `TypeError: EncryptorConfig.__init__() got an unexpected keyword argument 'master_key_provider'`
-            # suggests that even though we are passing `master_key_provider`, the underlying config class doesn't want it.
-            # This means `aws-encryption-sdk` 4.x removed `master_key_provider` support from the main interface in favor of CMMs or Keyrings?
-
-            # Yes, 4.x requires Keyrings or CMM.
-            # If `HAS_KEYRINGS` is False, it means `aws_encryption_sdk.keyrings.raw` failed to import.
-            # But we saw earlier that `aws_encryption_sdk.key_providers` exists but `keyrings` was not listed in `ls`?
-            # Wait, the `ls` output for `site-packages/aws_encryption_sdk` showed:
-            # key_providers
-            # materials_managers
-            # ...
-            # But NO `keyrings` directory!
-            # So this installed version (4.0.4) does NOT have `keyrings` in the top level package structure?
-            # Let's check `keyrings` location. Maybe it's under `aws_encryption_sdk.keyrings`?
-            # The `ls` output usually shows directories. `keyrings` was missing from the list.
-
-            # If version 4.0.4 is installed, it should have keyrings.
-            # Unless `aws-encryption-sdk` package structure is tricky.
-            # The docs say: `from aws_encryption_sdk.keyrings.raw import RawAESKeyring`
-
-            # If we truly don't have Keyrings available, we must use a CryptographicMaterialsManager (CMM).
-            # We can create a DefaultCryptoMaterialsManager with a MasterKeyProvider.
-
+            # Fallback: when keyrings are not available, use the CMM-based API.
+            # In keyring mode (HAS_KEYRINGS is True), the SDK receives a keyring directly.
+            # In this legacy mode, the SDK expects a CryptographicMaterialsManager instead,
+            # so we wrap the MasterKeyProvider in DefaultCryptoMaterialsManager and pass it
+            # via the 'materials_manager' keyword argument.
             from aws_encryption_sdk.materials_managers.default import DefaultCryptoMaterialsManager
             cmm = DefaultCryptoMaterialsManager(master_key_provider=self.master_key_provider)
             kwargs['materials_manager'] = cmm

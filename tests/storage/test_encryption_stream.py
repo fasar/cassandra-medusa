@@ -42,9 +42,9 @@ class EncryptedStreamTest(unittest.TestCase):
         shutil.rmtree(self.temp_dir)
 
     def test_encrypted_stream_output_matches_file(self):
-        """Verify that EncryptedStream produces identical output to encrypt_file (or at least valid decryptable output)"""
-        # Note: AWS Encryption SDK adds non-deterministic headers/IVs, so we can't expect identical binary output
-        # from two different encryption runs. Instead, we verify that both methods produce something decryptable.
+        """Verify that EncryptedStream produces identical output to encrypt_file (or valid output)"""
+        # Note: AWS Encryption SDK adds non-deterministic headers/IVs.
+        # We verify that both methods produce something decryptable.
 
         content = b"This is a test content for encryption." * 1000
         src_path = os.path.join(self.temp_dir, "source.txt")
@@ -215,6 +215,7 @@ class MissingDependencyTest(unittest.TestCase):
         with self.assertRaises(ImportError) as cm:
             EncryptionManager(key)
         self.assertIn("pip install cassandra-medusa[encryption]", str(cm.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

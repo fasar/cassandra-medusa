@@ -6,20 +6,29 @@ Medusa supports client-side encryption (CSE) to encrypt backup files before uplo
 This provides an additional layer of security, ensuring that data is encrypted in transit and at rest, independent of server-side encryption capabilities.
 
 **Important**: Encrypted and unencrypted backups are **not compatible** in differential backup chains.
+**Important**: Medusa has migrated from a custom Fernet encryption implementation to the official `aws-encryption-sdk`. The old Fernet format is no longer supported.
+
+## Prerequisites
+
+To use client-side encryption, you must install Medusa with the optional `encryption` dependency, which installs the `aws-encryption-sdk` library:
+
+```bash
+pip install cassandra-medusa[encryption]
+```
 
 ## How It Works
 
 When client-side encryption is enabled:
 
 1. **During Backup**:
-   - SSTable files are encrypted locally using Fernet symmetric encryption.
-   - Each file is processed in 1MB chunks to manage memory usage.
+   - SSTable files are encrypted locally using the AWS Encryption SDK.
+   - The stream is processed on-the-fly to manage memory usage.
    - Encrypted files are uploaded to cloud storage.
    - Metadata files (`manifest.json`, `schema.cql`, etc.) remain unencrypted for compatibility.
 
 2. **During Restore**:
-   - Encrypted files are downloaded from cloud storage to a temporary location.
-   - Files are decrypted locally before being restored to the Cassandra data directory.
+   - Encrypted files are downloaded from cloud storage.
+   - Files are decrypted locally using the AWS Encryption SDK stream decryptor before being restored to the Cassandra data directory.
    - Metadata files are copied directly without decryption.
 
 3. **Differential Backups**:
@@ -29,23 +38,16 @@ When client-side encryption is enabled:
 
 ## File Format
 
-The encrypted file format is designed to be simple and streamable. Each file consists of a sequence of encrypted chunks.
-
-For each 1MB chunk of the original file:
-1. The chunk is encrypted using Fernet.
-2. A **4-byte header** (big-endian integer) containing the length of the encrypted chunk is written to the output stream.
-3. The encrypted chunk bytes follow immediately.
-
-This structure allows for incremental decryption and random access (at chunk boundaries) if needed in the future, although Medusa currently processes files sequentially.
+Medusa delegates the encryption frame and metadata format entirely to the `aws-encryption-sdk`. The SDK automatically adds necessary headers, message IDs, and authentication tags to ensure strong security and integrity of the encrypted stream. The underlying cryptographic material manager wraps a user-provided raw AES 256-bit key.
 
 ## Configuration
 
 ### Encryption Key Generation
 
-Generate a Fernet-compatible 32-byte key:
+Generate a 32-byte (256-bit) key and base64-encode it. For example:
 
 ```bash
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+python3 -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
 ```
 
 This will output a base64-encoded key like:
@@ -86,7 +88,7 @@ Ensure that:
 
 
 The encryption key is required to decrypt all encrypted backups. Without it, **data cannot be recovered**.
-So backup the key and test recovery procedures to verify you can restore encrypted backups
+So backup the key and test recovery procedures to verify you can restore encrypted backups.
 
 ## Usage
 
@@ -143,7 +145,6 @@ These metadata files must be accessible without decryption for backup discovery 
 - **Disk**: Temporary encrypted files are stored in `encryption_tmp_dir` during upload/download.
   - Ensure sufficient disk space (at least `concurrent_transfers * largest_file_size`)
   - **S3**: S3 storage supports streaming for encryption and decryption. Temporary files are **not** created when using S3.
-- **Memory**: Processing is chunked (1MB) to limit memory usage.
 
 ### Optimization
 

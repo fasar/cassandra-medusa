@@ -10,10 +10,10 @@ This provides an additional layer of security, ensuring that data is encrypted i
 
 ## Prerequisites
 
-To use client-side encryption, you must install Medusa with the optional `encryption` dependency, which installs the `aws-encryption-sdk` library:
+To use client-side encryption, you must install Medusa with the optional `encryption` dependency, which installs the `aws-encryption-sdk` library. Note that Medusa requires `aws-encryption-sdk` version 3.x (versions >=4.0.0 are not supported due to incompatible API changes):
 
 ```bash
-pip install cassandra-medusa[encryption]
+pip install "cassandra-medusa[encryption]"
 ```
 
 ## How It Works

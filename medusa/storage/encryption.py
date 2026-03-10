@@ -21,7 +21,9 @@ try:
     import aws_encryption_sdk
     from aws_encryption_sdk import CommitmentPolicy
     from aws_encryption_sdk.identifiers import WrappingAlgorithm
-    from aws_encryption_sdk.keyrings.raw import RawAESKeyring
+    from aws_encryption_sdk.key_providers.raw import RawMasterKeyProvider
+    from aws_encryption_sdk.identifiers import EncryptionKeyType
+    from aws_encryption_sdk.internal.crypto.wrapping_keys import WrappingKey
     HAS_AWS_CRYPT = True
 except ImportError:
     HAS_AWS_CRYPT = False
@@ -98,12 +100,24 @@ class EncryptionManager:
         self.key_provider = "medusa-backup"
         self.key_name = "raw-aes-key"
 
-        self.keyring = RawAESKeyring(
-            key_namespace=self.key_provider,
-            key_name=self.key_name,
-            wrapping_key=self.decoded_key,
-            wrapping_algorithm=WrappingAlgorithm.AES_256_GCM_IV12_TAG16_NO_PADDING
-        )
+        class StaticKeyProvider(RawMasterKeyProvider):
+            provider_id = self.key_provider
+
+            def _get_raw_key(self, key_id):
+                key_id_str = key_id.decode('utf-8') if isinstance(key_id, bytes) else key_id
+                expected_id = self._key_name.decode('utf-8') if isinstance(self._key_name, bytes) else self._key_name
+                if hasattr(self, '_key_name') and key_id_str == expected_id:
+                    return WrappingKey(
+                        wrapping_algorithm=WrappingAlgorithm.AES_256_GCM_IV12_TAG16_NO_PADDING,
+                        wrapping_key=self._key_bytes,
+                        wrapping_key_type=EncryptionKeyType.SYMMETRIC
+                    )
+                raise ValueError("Invalid key id")
+
+        self.master_key_provider = StaticKeyProvider()
+        self.master_key_provider._key_bytes = self.decoded_key
+        self.master_key_provider._key_name = self.key_name
+        self.master_key_provider.add_master_key(self.key_name)
 
     def encrypt_file(self, src_path, dst_path):
         encrypted_hash = hashlib.md5()
@@ -116,7 +130,7 @@ class EncryptionManager:
             with self.client.stream(
                 mode='e',
                 source=hashing_source,
-                keyring=self.keyring
+                key_provider=self.master_key_provider
             ) as encryptor:
                 for chunk in encryptor:
                     # Update encrypted metrics
@@ -139,7 +153,7 @@ class EncryptionManager:
             with self.client.stream(
                 mode='d',
                 source=f_in,
-                keyring=self.keyring
+                key_provider=self.master_key_provider
             ) as decryptor:
                 for chunk in decryptor:
                     f_out.write(chunk)
@@ -187,7 +201,7 @@ class EncryptedStream(EncryptionStreamBase):
         self.aws_stream = self.manager.client.stream(
             mode='e',
             source=self.hashing_source,
-            keyring=self.manager.keyring
+            key_provider=self.manager.master_key_provider
         )
         self.iterator = iter(self.aws_stream)
 
@@ -258,7 +272,7 @@ class DecryptedStream(EncryptionStreamBase):
         self.aws_stream = self.manager.client.stream(
             mode='d',
             source=source_stream,
-            keyring=self.manager.keyring
+            key_provider=self.manager.master_key_provider
         )
         self.iterator = iter(self.aws_stream)
 

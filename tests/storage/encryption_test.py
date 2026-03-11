@@ -17,7 +17,6 @@ import unittest
 import os
 import tempfile
 import base64
-import os
 from medusa.storage.encryption import EncryptionManager
 
 

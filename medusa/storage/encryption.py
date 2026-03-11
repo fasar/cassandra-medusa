@@ -37,9 +37,9 @@ def _decode_and_validate_key(key_secret_base64):
     try:
         # Convert to bytes if string
         key_bytes = key_secret_base64 if isinstance(key_secret_base64, bytes) else key_secret_base64.encode('utf-8')
-        # Decode using URL-safe base64 (which is also compatible with standard base64 if no URL-unsafe chars are used)
-        # This allows flexibility for the user.
-        key = base64.urlsafe_b64decode(key_bytes)
+        # Decode with strict validation: altchars=b'-_' supports URL-safe base64 (- and _ instead of + and /),
+        # and validate=True raises an error on any invalid characters or padding.
+        key = base64.b64decode(key_bytes, altchars=b'-_', validate=True)
     except Exception as e:
         raise ValueError(
             f"Encryption key is not properly base64-encoded. "

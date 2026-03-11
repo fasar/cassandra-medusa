@@ -16,7 +16,6 @@
 import base64
 import hashlib
 import struct
-import logging
 import os
 import io
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes

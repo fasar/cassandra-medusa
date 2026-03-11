@@ -20,7 +20,6 @@ import logging
 import os
 import io
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
 
 # Chunk size for reading/encrypting.
 # 1MB seems reasonable balance between memory usage and overhead.
@@ -30,32 +29,37 @@ CHUNK_SIZE = 1024 * 1024
 MAX_CHUNK_SIZE = 2 * 1024 * 1024
 
 
+def _decode_and_validate_key(key_secret_base64):
+    if not key_secret_base64:
+        raise ValueError("Encryption key is not provided")
+
+    # Validate base64 encoding and key length
+    try:
+        # Convert to bytes if string
+        key_bytes = key_secret_base64 if isinstance(key_secret_base64, bytes) else key_secret_base64.encode('utf-8')
+        # Decode using URL-safe base64 (which is also compatible with standard base64 if no URL-unsafe chars are used)
+        # This allows flexibility for the user.
+        key = base64.urlsafe_b64decode(key_bytes)
+    except Exception as e:
+        raise ValueError(
+            f"Encryption key is not properly base64-encoded. "
+            f"Please ensure the key is base64-encoded. Details: {e}"
+        )
+
+    # Validate key length (AES-256 requires exactly 32 bytes)
+    if len(key) != 32:
+        raise ValueError(
+            f"Encryption key has invalid length. "
+            f"Expected 32 bytes (256 bits) when base64-decoded, but got {len(key)} bytes. "
+        )
+    return key
+
+
 class EncryptionManager:
     """Manages encryption and decryption of backup files using AES-256-GCM symmetric encryption."""
 
     def __init__(self, key_secret_base64):
-        if not key_secret_base64:
-            raise ValueError("Encryption key is not provided")
-
-        # Validate base64 encoding and key length
-        try:
-            # Convert to bytes if string
-            key_bytes = key_secret_base64 if isinstance(key_secret_base64, bytes) else key_secret_base64.encode('utf-8')
-            # Decode using URL-safe base64 (which is also compatible with standard base64 if no URL-unsafe chars are used)
-            # This allows flexibility for the user.
-            self.key = base64.urlsafe_b64decode(key_bytes)
-        except Exception as e:
-            raise ValueError(
-                f"Encryption key is not properly base64-encoded. "
-                f"Please ensure the key is base64-encoded. Details: {e}"
-            )
-
-        # Validate key length (AES-256 requires exactly 32 bytes)
-        if len(self.key) != 32:
-            raise ValueError(
-                f"Encryption key has invalid length. "
-                f"Expected 32 bytes (256 bits) when base64-decoded, but got {len(self.key)} bytes. "
-            )
+        self.key = _decode_and_validate_key(key_secret_base64)
 
     def encrypt_file(self, src_path, dst_path):
         source_hash = hashlib.md5()
@@ -78,8 +82,7 @@ class EncryptionManager:
                 # Encrypt using AES-GCM
                 encryptor = Cipher(
                     algorithms.AES(self.key),
-                    modes.GCM(iv),
-                    backend=default_backend()
+                    modes.GCM(iv)
                 ).encryptor()
 
                 ciphertext = encryptor.update(chunk) + encryptor.finalize()
@@ -145,8 +148,7 @@ class EncryptionManager:
                 try:
                     decryptor = Cipher(
                         algorithms.AES(self.key),
-                        modes.GCM(iv, tag),
-                        backend=default_backend()
+                        modes.GCM(iv, tag)
                     ).decryptor()
                     decrypted_chunk = decryptor.update(ciphertext) + decryptor.finalize()
                 except Exception as e:
@@ -158,18 +160,7 @@ class EncryptionManager:
 class EncryptionStreamBase(io.RawIOBase):
     def __init__(self, source_stream, key_secret_base64):
         self.source_stream = source_stream
-
-        if not key_secret_base64:
-            raise ValueError("Encryption key is not provided")
-
-        try:
-            key_bytes = key_secret_base64 if isinstance(key_secret_base64, bytes) else key_secret_base64.encode('utf-8')
-            self.key = base64.urlsafe_b64decode(key_bytes)
-        except Exception as e:
-            raise ValueError(f"Invalid base64 key: {e}")
-
-        if len(self.key) != 32:
-            raise ValueError(f"Invalid key length. Expected 32 bytes, got {len(self.key)}")
+        self.key = _decode_and_validate_key(key_secret_base64)
 
         self.source_hash = hashlib.md5()
         self.encrypted_hash = hashlib.md5()
@@ -224,8 +215,7 @@ class EncryptedStream(EncryptionStreamBase):
             iv = os.urandom(12)
             encryptor = Cipher(
                 algorithms.AES(self.key),
-                modes.GCM(iv),
-                backend=default_backend()
+                modes.GCM(iv)
             ).encryptor()
 
             ciphertext = encryptor.update(chunk) + encryptor.finalize()
@@ -327,8 +317,7 @@ class DecryptedStream(EncryptionStreamBase):
             try:
                 decryptor = Cipher(
                     algorithms.AES(self.key),
-                    modes.GCM(iv, tag),
-                    backend=default_backend()
+                    modes.GCM(iv, tag)
                 ).decryptor()
                 decrypted_chunk = decryptor.update(ciphertext) + decryptor.finalize()
             except Exception as e:

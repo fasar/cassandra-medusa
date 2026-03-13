@@ -562,8 +562,8 @@ class AbstractStorage(abc.ABC):
     @staticmethod
     def get_or_create_event_loop() -> asyncio.AbstractEventLoop:
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        except Exception:
             loop = None
         if loop is None or loop.is_closed():
             logging.warning("Having to make a new event loop unexpectedly")

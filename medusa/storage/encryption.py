@@ -174,7 +174,7 @@ class EncryptionStreamBase(io.RawIOBase):
         self.encrypted_hash = hashlib.md5()
         self.encrypted_size = 0
 
-        self.buffer = io.BytesIO()
+        self.buffer = b""
         self.eof = False
 
         self.aws_stream = None
@@ -187,6 +187,14 @@ class EncryptionStreamBase(io.RawIOBase):
 
     def readall(self):
         return self.read()
+
+    def close(self):
+        if not self.closed:
+            if self.aws_stream is not None and hasattr(self.aws_stream, 'close'):
+                self.aws_stream.close()
+            if self.source_stream is not None and hasattr(self.source_stream, 'close'):
+                self.source_stream.close()
+            super().close()
 
     @property
     def md5_encrypted(self):
@@ -209,51 +217,30 @@ class EncryptedStream(EncryptionStreamBase):
     def read(self, size=-1):
         if size == -1:
             # Read everything
-            output = bytearray()
-            # read remaining buffer
-            remaining_buffer_data = self.buffer.read()
-            if remaining_buffer_data:
-                output.extend(remaining_buffer_data)
-
-            # consume the rest of the stream
+            chunks = [self.buffer] if self.buffer else []
             for chunk in self.iterator:
-                output.extend(chunk)
+                chunks.append(chunk)
                 self.encrypted_size += len(chunk)
                 self.encrypted_hash.update(chunk)
 
-            # buffer is now empty
-            self.buffer = io.BytesIO()
+            self.buffer = b""
             self.eof = True
-            return bytes(output)
+            return b"".join(chunks)
 
-        # Return from buffer if we have enough data (without altering buffer position if we don't)
-        current_buffer_pos = self.buffer.tell()
-        available_in_buffer = self.buffer.getbuffer().nbytes - current_buffer_pos
-
-        if available_in_buffer >= size:
-            return self.buffer.read(size)
-
-        # If buffer is empty or exhausted (has fewer than 'size' bytes), read from iterator
-        while (self.buffer.getbuffer().nbytes - self.buffer.tell()) < size:
+        # Fill buffer from iterator if we don't have enough data
+        while len(self.buffer) < size:
             try:
                 chunk = next(self.iterator)
                 self.encrypted_size += len(chunk)
                 self.encrypted_hash.update(chunk)
-
-                # Append to buffer
-                current_pos = self.buffer.tell()
-                self.buffer.seek(0, io.SEEK_END)
-                self.buffer.write(chunk)
-                self.buffer.seek(current_pos)
+                self.buffer += chunk
             except StopIteration:
                 self.eof = True
                 break
 
-        data = self.buffer.read(size)
-
-        # Optimization: Clear buffer if fully read
-        if self.buffer.tell() == self.buffer.getbuffer().nbytes:
-            self.buffer = io.BytesIO()
+        # Return requested size from buffer
+        data = self.buffer[:size]
+        self.buffer = self.buffer[size:]
 
         return data
 
@@ -283,51 +270,30 @@ class DecryptedStream(EncryptionStreamBase):
     def read(self, size=-1):
         if size == -1:
             # Read everything
-            output = bytearray()
-            # Read everything remaining in buffer first
-            remaining_buffer_data = self.buffer.read()
-            if remaining_buffer_data:
-                output.extend(remaining_buffer_data)
-
-            # Consume the rest of the stream
+            chunks = [self.buffer] if self.buffer else []
             for chunk in self.iterator:
-                output.extend(chunk)
+                chunks.append(chunk)
                 self.plaintext_size += len(chunk)
                 self.plaintext_hash.update(chunk)
 
-            # buffer is now empty
-            self.buffer = io.BytesIO()
+            self.buffer = b""
             self.eof = True
-            return bytes(output)
+            return b"".join(chunks)
 
-        # Return from buffer if we have enough data (without altering buffer position if we don't)
-        current_buffer_pos = self.buffer.tell()
-        available_in_buffer = self.buffer.getbuffer().nbytes - current_buffer_pos
-
-        if available_in_buffer >= size:
-            return self.buffer.read(size)
-
-        # Fill buffer from iterator
-        while (self.buffer.getbuffer().nbytes - self.buffer.tell()) < size:
+        # Fill buffer from iterator if we don't have enough data
+        while len(self.buffer) < size:
             try:
                 chunk = next(self.iterator)
                 self.plaintext_size += len(chunk)
                 self.plaintext_hash.update(chunk)
-
-                # Append to buffer
-                current_pos = self.buffer.tell()
-                self.buffer.seek(0, io.SEEK_END)
-                self.buffer.write(chunk)
-                self.buffer.seek(current_pos)
+                self.buffer += chunk
             except StopIteration:
                 self.eof = True
                 break
 
-        data = self.buffer.read(size)
-
-        # Optimization: Clear buffer if fully read
-        if self.buffer.tell() == self.buffer.getbuffer().nbytes:
-            self.buffer = io.BytesIO()
+        # Return requested size from buffer
+        data = self.buffer[:size]
+        self.buffer = self.buffer[size:]
 
         return data
 

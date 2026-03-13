@@ -28,12 +28,6 @@ try:
 except ImportError:
     HAS_AWS_CRYPT = False
 
-
-# Chunk size for reading/encrypting.
-# 1MB seems reasonable balance between memory usage and overhead.
-CHUNK_SIZE = 1024 * 1024
-
-
 class HashingStreamWrapper(io.RawIOBase):
     """
     Wraps a stream to calculate MD5 and size of data read from it.
@@ -114,9 +108,8 @@ class EncryptionManager:
         try:
             # Convert to bytes if string
             key_bytes = key_secret_base64 if isinstance(key_secret_base64, bytes) else key_secret_base64.encode('utf-8')
-            # Decode with strict validation: altchars=b'-_' supports URL-safe base64 (- and _ instead of + and /),
-            # and validate=True raises an error on any invalid characters or padding.
-            self.decoded_key = base64.b64decode(key_bytes, altchars=b'-_', validate=True)
+            # Decode with strict validation with validate=True raises an error on any invalid characters or padding.
+            self.decoded_key = base64.b64decode(key_bytes, validate=True)
         except Exception as e:
             raise ValueError(
                 f"Encryption key is not properly base64-encoded. "

@@ -28,6 +28,8 @@ try:
 except ImportError:
     HAS_AWS_CRYPT = False
 
+CHUNK_SIZE = 1024 * 1024
+
 class HashingStreamWrapper(io.RawIOBase):
     """
     Wraps a stream to calculate MD5 and size of data read from it.

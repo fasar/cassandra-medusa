@@ -27,6 +27,21 @@ from medusa.storage.encryption import EncryptionManager, HAS_AWS_CRYPT
 
 
 class MockStorage(AbstractStorage):
+    """
+    A mock implementation of AbstractStorage specifically designed to test the client-side encryption flow
+    in EncryptedStorageTest.
+
+    It encapsulates the behavior of a storage backend that supports streaming uploads by overriding
+    _upload_object_from_stream. In production, subclasses like S3BaseStorage use this method to stream
+    data directly to the remote storage. During these streaming uploads, the EncryptedStream wrapper
+    encrypts data on the fly and calculates the source metadata (source_size, source_md5) simultaneously.
+
+    This mock consumes the provided stream (which simulates the upload process) and extracts the
+    dynamically calculated source properties to build a ManifestObject. This allows tests to verify
+    that the encryption layer correctly processes the data and computes the necessary metadata
+    without requiring a real storage backend or performing actual network I/O.
+    """
+
     def connect(self):
         # Mock implementation - no connection needed for testing
         pass

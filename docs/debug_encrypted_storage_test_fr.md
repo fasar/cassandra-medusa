@@ -102,12 +102,55 @@ poetry run pytest -s tests/storage/encrypted_storage_test.py
 - Tapez `self.config.key_secret_base64` pour afficher la valeur.
 - Tapez `c` (continue) pour reprendre l'exécution, ou `n` (next) pour avancer ligne par ligne.
 
-### Utilisation de l'outil de débogage d'un IDE (VSCode, PyCharm)
+### Utilisation de l'outil de débogage sous Visual Studio Code (Windows)
 
-Si vous utilisez un IDE comme VSCode ou PyCharm :
-1. Placez un point d'arrêt (breakpoint) visuel sur la ligne `if hasattr(self.config, 'key_secret_base64')` dans `medusa/storage/abstract_storage.py`.
-2. Lancez le test en mode **Debug** depuis l'interface de votre IDE.
-3. Inspectez les variables locales (`self.config`) dans le panneau d'inspection pour comprendre pourquoi la condition n'est pas remplie.
+Si vous utilisez Visual Studio Code (VS Code) sous Windows, voici la procédure détaillée pour configurer l'environnement de débogage avec Poetry et Pytest.
+
+**Étape 1 : Sélectionner l'interpréteur Python (Poetry)**
+Pour que VS Code reconnaisse vos dépendances, vous devez sélectionner l'environnement virtuel créé par Poetry :
+1. Ouvrez un terminal dans VS Code (`Ctrl` + `\``) et tapez : `poetry env info --path`. Copiez le chemin affiché (ex: `C:\Users\VotreNom\AppData\Local\pypoetry\Cache\virtualenvs\medusa-...`).
+2. Ouvrez la palette de commandes de VS Code (`Ctrl` + `Shift` + `P`).
+3. Tapez et sélectionnez **Python: Select Interpreter**.
+4. Cliquez sur **Enter interpreter path...** -> **Find...** et naviguez jusqu'au dossier `Scripts` de l'environnement copié (ex: `...\Scripts\python.exe`), puis sélectionnez-le.
+
+**Étape 2 : Configurer les tests avec Pytest**
+1. Ouvrez l'onglet de Test (icône de fiole sur la barre latérale gauche).
+2. Cliquez sur **Configure Python Tests**.
+3. Sélectionnez **pytest** comme framework de test.
+4. Sélectionnez la racine de votre projet ou le dossier `tests/`.
+
+**Étape 3 : Créer une configuration de débogage (`launch.json`)**
+Si vous souhaitez lancer le fichier de test directement via le débogueur :
+1. Allez dans l'onglet **Run and Debug** (icône de lecture avec un insecte) et cliquez sur **create a launch.json file**, ou bien créez le dossier `.vscode` à la racine de votre projet et ajoutez-y un fichier `launch.json`.
+2. Ajoutez la configuration suivante :
+```json
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug pytest (Medusa)",
+            "type": "python",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/storage/encrypted_storage_test.py",
+                "-v",
+                "-s"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}
+```
+
+**Étape 4 : Déboguer le test**
+1. Ouvrez le fichier `medusa/storage/abstract_storage.py`.
+2. Allez à la méthode `download_blobs`.
+3. Cliquez à gauche du numéro de ligne (ex: la ligne `if hasattr(self.config, 'key_secret_base64')...`) pour ajouter un **point d'arrêt** (un cercle rouge va apparaître).
+4. Allez dans l'onglet **Run and Debug** et cliquez sur le bouton vert **Play** avec la configuration `Debug pytest (Medusa)`.
+5. Le test se lancera et l'exécution s'arrêtera sur le point rouge.
+6. Utilisez l'onglet **Variables** en haut à gauche pour inspecter `self.config`. Vous pourrez y voir les attributs et comprendre pourquoi `key_secret_base64` est manquant ou invalide.
 
 ## 3. Remarque importante sur le comportement de _download_encrypted_blobs
 

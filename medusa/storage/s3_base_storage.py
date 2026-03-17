@@ -244,8 +244,8 @@ class S3BaseStorage(AbstractStorage):
             try:
                 boto_credentials = session.get_credentials()
                 return CensoredCredentials(
-                    access_key_id=boto_credentials.access_key,
-                    secret_access_key=boto_credentials.secret_key,
+                    access_key_id=boto_credentials.access_key if boto_credentials else None,
+                    secret_access_key=boto_credentials.secret_key if boto_credentials else None,
                     region=session.get_config_variable('region'),
                 )
             except botocore.exceptions.ProfileNotFound:

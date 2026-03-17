@@ -261,6 +261,7 @@ jobs:
           chmod +x mc
           ./mc alias set minio http://127.0.0.1:9000 minio_key minio_secret
           ./mc mb minio/medusa-dev
+          mkdir -p ~/.aws
           cp ./tests/resources/minio/minio_credentials ~/.aws/minio_credentials
           ./run_integration_tests.sh -v --minio --no-local --cassandra-version=${{ matrix.cassandra-version }} 
         elif [ "${{ matrix.it-backend }}" == "azure" ]

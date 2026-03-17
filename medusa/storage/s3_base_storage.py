@@ -236,10 +236,11 @@ class S3BaseStorage(AbstractStorage):
             session.set_config_variable('region', "us-east-1")
 
         if config.key_file:
+            key_file_path = os.path.expanduser(config.key_file)
             logging.debug("Setting AWS credentials file to {}".format(
-                config.key_file,
+                key_file_path,
             ))
-            session.set_config_variable('credentials_file', config.key_file)
+            session.set_config_variable('credentials_file', key_file_path)
 
             try:
                 boto_credentials = session.get_credentials()

@@ -23,7 +23,12 @@ def setup_debug_on_error(userdata):
     BEHAVE_DEBUG_ON_ERROR = userdata.getbool("BEHAVE_DEBUG_ON_ERROR")
 
 
+import os
+
+
 def before_all(context):
+    os.environ['no_proxy'] = 'localhost,127.0.0.1'
+    os.environ['NO_PROXY'] = 'localhost,127.0.0.1'
     if "cassandra-version" in context.config.userdata:
         context.cassandra_version = context.config.userdata["cassandra-version"]
     else:

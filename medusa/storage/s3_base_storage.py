@@ -22,6 +22,7 @@ import concurrent.futures
 import logging
 import io
 import os
+import asyncio
 import typing as t
 
 from boto3.s3.transfer import TransferConfig
@@ -513,10 +514,36 @@ class S3BaseStorage(AbstractStorage):
 
     @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5000))
     async def _delete_object(self, obj: AbstractBlob):
-        self.s3_client.delete_object(
-            Bucket=self.bucket_name,
-            Key=obj.name
+        loop = self.get_or_create_event_loop()
+        await loop.run_in_executor(
+            self.executor,
+            lambda: self.s3_client.delete_object(
+                Bucket=self.bucket_name,
+                Key=obj.name
+            )
         )
+
+    async def _delete_objects(self, objects: t.List[AbstractBlob], concurrent_transfers: int = None):
+        # S3 supports deleting up to 1000 objects per request
+        chunk_size = 1000
+
+        # split objects into chunk-sized chunks
+        chunks = [objects[i:i + chunk_size] for i in range(0, len(objects), chunk_size)]
+
+        loop = self.get_or_create_event_loop()
+        coros = []
+        for chunk in chunks:
+            objects_to_delete = {'Objects': [{'Key': obj.name} for obj in chunk]}
+            coro = loop.run_in_executor(
+                self.executor,
+                lambda chunk_objs=objects_to_delete: self.s3_client.delete_objects(
+                    Bucket=self.bucket_name,
+                    Delete=chunk_objs
+                )
+            )
+            coros.append(coro)
+
+        await asyncio.gather(*coros)
 
     async def _get_blob_metadata(self, blob_key: str) -> AbstractBlobMetadata:
         extra_args = {}

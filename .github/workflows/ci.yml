@@ -37,7 +37,7 @@ jobs:
         version: 2.2.1
     - name: Install dependencies
       run: |
-        poetry install
+        poetry install --all-extras
 
     - name: Lint with flake8
       run: |
@@ -169,7 +169,7 @@ jobs:
         version: 2.2.1
     - name: Install dependencies
       run: |
-        poetry install
+        poetry install --all-extras
         sudo apt-get remove azure-cli || true
         poetry run pip install git+https://github.com/riptano/ccm.git
 
@@ -320,6 +320,7 @@ jobs:
         uses: docker/setup-buildx-action@v1
       - name: Login to DockerHub
         uses: docker/login-action@v2
+        if: ${{ secrets.K8SSANDRA_DOCKER_HUB_USERNAME != '' }}
         with:
           username: ${{ secrets.K8SSANDRA_DOCKER_HUB_USERNAME }}
           password: ${{ secrets.K8SSANDRA_DOCKER_HUB_PASSWORD }}
@@ -356,7 +357,7 @@ jobs:
         working-directory: cassandra-medusa
         run: |
           echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          poetry install && poetry build
+          poetry install --all-extras && poetry build
       - name: Build Medusa image
         id: docker_build
         uses: docker/build-push-action@v4
@@ -411,6 +412,7 @@ jobs:
       uses: docker/setup-buildx-action@v2
     - name: Login to DockerHub
       uses: docker/login-action@v2
+      if: ${{ secrets.K8SSANDRA_DOCKER_HUB_USERNAME != '' }}
       with:
         username: ${{ secrets.K8SSANDRA_DOCKER_HUB_USERNAME }}
         password: ${{ secrets.K8SSANDRA_DOCKER_HUB_PASSWORD }}
@@ -426,7 +428,7 @@ jobs:
     - name: Build Medusa
       run: |
         echo "Publishing release $(git rev-parse --short HEAD) in Docker Hub"
-        poetry install && poetry build
+        poetry install --all-extras && poetry build
     - name: Build image and push
       id: docker_build
       uses: docker/build-push-action@v4
@@ -491,6 +493,7 @@ jobs:
       uses: docker/setup-buildx-action@v1
     - name: Login to DockerHub
       uses: docker/login-action@v2
+      if: ${{ secrets.K8SSANDRA_DOCKER_HUB_USERNAME != '' }}
       with:
         username: ${{ secrets.K8SSANDRA_DOCKER_HUB_USERNAME }}
         password: ${{ secrets.K8SSANDRA_DOCKER_HUB_PASSWORD }}
@@ -506,7 +509,7 @@ jobs:
     - name: Build Medusa
       run: |
         echo "Publishing release ${{ steps.vars.outputs.version}} in Docker Hub"
-        poetry install && poetry build
+        poetry install --all-extras && poetry build
     - name: Build image and push
       id: docker_build
       uses: docker/build-push-action@v4
@@ -546,5 +549,5 @@ jobs:
       run: |
         . venv/bin/activate
         pip install setuptools wheel twine
-        poetry install && poetry build
+        poetry install --all-extras && poetry build
         twine upload dist/*

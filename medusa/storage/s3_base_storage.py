@@ -241,18 +241,23 @@ class S3BaseStorage(AbstractStorage):
             ))
             session.set_config_variable('credentials_file', config.key_file)
 
-            boto_credentials = session.get_credentials()
-            return CensoredCredentials(
-                access_key_id=boto_credentials.access_key,
-                secret_access_key=boto_credentials.secret_key,
-                region=session.get_config_variable('region'),
-            )
-        else:
-            return CensoredCredentials(
-                access_key_id=None,
-                secret_access_key=None,
-                region=session.get_config_variable('region'),
-            )
+            try:
+                boto_credentials = session.get_credentials()
+            except botocore.exceptions.ProfileNotFound:
+                boto_credentials = None
+
+            if boto_credentials is not None:
+                return CensoredCredentials(
+                    access_key_id=boto_credentials.access_key,
+                    secret_access_key=boto_credentials.secret_key,
+                    region=session.get_config_variable('region'),
+                )
+
+        return CensoredCredentials(
+            access_key_id=None,
+            secret_access_key=None,
+            region=session.get_config_variable('region'),
+        )
 
     @staticmethod
     def _region_from_provider_name(provider_name: str) -> str:

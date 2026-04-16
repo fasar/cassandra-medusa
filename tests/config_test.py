@@ -16,6 +16,7 @@
 import os
 import pathlib
 import unittest
+from unittest import mock
 from unittest.mock import patch
 import socket
 import tempfile
@@ -187,7 +188,8 @@ class ConfigTest(unittest.TestCase):
         config = medusa.config.parse_config(args, medusa_k8s_config)
         assert config['cassandra']['use_sudo'] == 'False'
 
-    def test_use_sudo_kubernetes_enabled_without_config_file(self):
+    @mock.patch("medusa.config.HostnameResolver.resolve_fqdn", return_value="localhost")
+    def test_use_sudo_kubernetes_enabled_without_config_file(self, mock_resolve_fqdn):
         kubernetes_args = {
             "k8s_enabled": 'True',
             "cassandra_url": 'https://foo:8080',

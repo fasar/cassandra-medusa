@@ -251,6 +251,8 @@ class S3BaseStorage(AbstractStorage):
                     )
             except botocore.exceptions.ProfileNotFound:
                 logging.debug("Config profile not found when getting credentials.")
+            except Exception as e:
+                logging.debug(f"Exception when getting credentials: {e}")
 
             return CensoredCredentials(
                 access_key_id=None,
@@ -258,6 +260,19 @@ class S3BaseStorage(AbstractStorage):
                 region=session.get_config_variable('region'),
             )
         else:
+            try:
+                boto_credentials = session.get_credentials()
+                if boto_credentials:
+                    return CensoredCredentials(
+                        access_key_id=boto_credentials.access_key,
+                        secret_access_key=boto_credentials.secret_key,
+                        region=session.get_config_variable('region'),
+                    )
+            except botocore.exceptions.ProfileNotFound:
+                logging.debug("Config profile not found when getting credentials.")
+            except Exception as e:
+                logging.debug(f"Exception when getting credentials: {e}")
+
             return CensoredCredentials(
                 access_key_id=None,
                 secret_access_key=None,

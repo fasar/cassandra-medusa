@@ -40,7 +40,7 @@ AbstractBlob = collections.namedtuple('AbstractBlob', ['name', 'size', 'hash', '
 AbstractBlobMetadata = collections.namedtuple('AbstractBlobMetadata',
                                               ['name', 'sse_enabled', 'sse_key_id', 'sse_customer_key_md5'])
 
-ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5'])
+ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5', 'remote_size', 'remote_md5'], defaults=(None, None))
 
 
 class ObjectDoesNotExistError(Exception):

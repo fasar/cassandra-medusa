@@ -413,6 +413,8 @@ def make_manifest_object(fqdn, snapshot_path, manifest_objects, storage):
             'path': url_to_path(manifest_object.path, fqdn, storage),
             'MD5': manifest_object.MD5,
             'size': manifest_object.size,
+            **({'remote_md5': manifest_object.remote_md5} if manifest_object.remote_md5 is not None else {}),
+            **({'remote_size': manifest_object.remote_size} if manifest_object.remote_size is not None else {}),
         } for manifest_object in manifest_objects]
     }
 

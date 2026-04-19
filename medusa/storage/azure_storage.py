@@ -33,7 +33,7 @@ from pathlib import Path
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 
-ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5'])
+ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5', 'remote_size', 'remote_md5'], defaults=(None, None))
 
 MAX_UP_DOWN_LOAD_RETRIES = 5
 

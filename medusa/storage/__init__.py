@@ -99,6 +99,9 @@ class Storage(object):
             return s3_storage
         elif self._config.storage_provider.lower() == 'local':
             return LocalStorage(self._config)
+        elif self._config.storage_provider.lower() == 'custom_script':
+            from medusa.storage.custom_script_storage import CustomScriptStorage
+            return CustomScriptStorage(self._config)
         elif self._config.storage_provider.lower() == "ibm_storage":
             s3_storage = S3BaseStorage(self._config)
             return s3_storage

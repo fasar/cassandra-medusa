@@ -1,12 +1,10 @@
 import asyncio
-import json
 import os
 import tempfile
 import unittest
-from pathlib import Path
 
 from medusa.storage.custom_script_storage import CustomScriptStorage
-from medusa.storage.abstract_storage import ManifestObject, AbstractBlob
+
 
 class MockConfig:
     def __init__(self, upload_script, download_script):
@@ -42,11 +40,13 @@ class MockConfig:
         self.read_timeout = 60
         self.key_secret_base64 = None
 
+
 class MockBlob:
     def __init__(self, name, size, hash):
         self.name = name
         self.size = size
         self.hash = hash
+
 
 class TestCustomScriptStorage(unittest.TestCase):
 
@@ -82,7 +82,7 @@ class TestCustomScriptStorage(unittest.TestCase):
 
         dest = "s3://test/dest.txt"
 
-        loop = CustomScriptStorage.get_or_create_event_loop()
+        loop = asyncio.get_event_loop()
         manifest_obj = loop.run_until_complete(self.storage._upload_blob(path, dest))
 
         self.assertEqual(manifest_obj.path, "dest.txt")
@@ -116,6 +116,7 @@ class TestCustomScriptStorage(unittest.TestCase):
 
         matches = CustomScriptStorage.blob_matches_manifest(blob, manifest_dict, enable_md5_checks=True)
         self.assertTrue(matches)
+
 
 if __name__ == '__main__':
     unittest.main()

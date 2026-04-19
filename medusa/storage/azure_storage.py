@@ -33,7 +33,9 @@ from pathlib import Path
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 
-ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5', 'remote_size', 'remote_md5'], defaults=(None, None))
+ManifestObject = collections.namedtuple(
+    'ManifestObject', ['path', 'size', 'MD5', 'remote_size', 'remote_md5'], defaults=(None, None)
+)
 
 MAX_UP_DOWN_LOAD_RETRIES = 5
 
@@ -74,9 +76,9 @@ class AzureStorage(AbstractStorage):
     def _make_blob_service_url(self, account_name, config):
         domain = 'windows.net' if config.host is None else config.host
         if config.port is None:
-            url = f"https://{account_name}.blob.core.{domain}/"
+            url = "https://{}.blob.core.{}/".format(account_name, domain)
         else:
-            url = f"https://{account_name}.blob.core.{domain}:{config.port}/"
+            url = "https://{}.blob.core.{}:{}/".format(account_name, domain, config.port)
         return url
 
     def connect(self):

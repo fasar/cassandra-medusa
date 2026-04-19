@@ -1,8 +1,7 @@
+import asyncio
 import json
 import logging
-import pathlib
 import subprocess
-import typing as t
 from pathlib import Path
 
 from medusa.storage.s3_base_storage import S3BaseStorage
@@ -38,7 +37,7 @@ class CustomScriptStorage(S3BaseStorage):
         cmd = [self.upload_script, str(src), dest]
         logging.debug(f"Executing upload script: {' '.join(cmd)}")
 
-        loop = AbstractStorage.get_or_create_event_loop()
+        loop = asyncio.get_event_loop()
         try:
             # Run in executor to not block the asyncio loop
             process = await loop.run_in_executor(
@@ -84,7 +83,8 @@ class CustomScriptStorage(S3BaseStorage):
         """
         Reroute encrypted blob download to the custom download script.
         """
-        self._download_blob(src, dest)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._download_blob, src, dest)
 
     @staticmethod
     def blob_matches_manifest(blob: AbstractBlob, object_in_manifest: dict, enable_md5_checks=False):
@@ -95,9 +95,7 @@ class CustomScriptStorage(S3BaseStorage):
         expected_size = object_in_manifest.get('remote_size', object_in_manifest['size'])
         expected_md5 = object_in_manifest.get('remote_md5', object_in_manifest['MD5'])
 
-        return S3BaseStorage.compare_with_manifest(
-            actual_size=blob.size,
-            size_in_manifest=expected_size,
-            actual_hash=str(blob.hash) if enable_md5_checks else None,
-            hash_in_manifest=expected_md5
-        )
+        object_in_manifest_copy = object_in_manifest.copy()
+        object_in_manifest_copy['size'] = expected_size
+        object_in_manifest_copy['MD5'] = expected_md5
+        return S3BaseStorage.blob_matches_manifest(blob, object_in_manifest_copy, enable_md5_checks)

@@ -214,7 +214,6 @@ class EncryptionStreamBase(io.RawIOBase):
         self.output_size = 0
 
         self.buffer = b""
-        self.eof = False
 
         self.aws_stream = None
 
@@ -237,7 +236,6 @@ class EncryptionStreamBase(io.RawIOBase):
                 self.output_hash.update(chunk)
 
             self.buffer = b""
-            self.eof = True
             return b"".join(chunks)
 
         # Fill buffer from iterator if we don't have enough data
@@ -247,7 +245,6 @@ class EncryptionStreamBase(io.RawIOBase):
             while current_len < size:
                 chunk = self.aws_stream.read(self.manager.frame_length)
                 if not chunk:
-                    self.eof = True
                     break
                 self.output_size += len(chunk)
                 self.output_hash.update(chunk)

@@ -273,10 +273,6 @@ class EncryptionStreamBase(io.RawIOBase):
                 self.source_stream.close()
             super().close()
 
-    @property
-    def md5_encrypted(self):
-        return base64.b64encode(self.output_hash.digest()).decode('utf-8').strip()
-
 
 class EncryptedStream(EncryptionStreamBase):
     def __init__(self, source_stream, key_secret_base64, frame_length=8388608):
@@ -300,6 +296,10 @@ class EncryptedStream(EncryptionStreamBase):
     def md5_source(self):
         return base64.b64encode(self.hashing_source.hash.digest()).decode('utf-8').strip()
 
+    @property
+    def md5_encrypted(self):
+        return base64.b64encode(self.output_hash.digest()).decode('utf-8').strip()
+
 
 class DecryptedStream(EncryptionStreamBase):
     def __init__(self, source_stream, key_secret_base64, frame_length=8388608):
@@ -318,7 +318,3 @@ class DecryptedStream(EncryptionStreamBase):
     @property
     def md5_source(self):
         return base64.b64encode(self.output_hash.digest()).decode('utf-8').strip()
-
-    @property
-    def md5_encrypted(self):
-        return "N/A"

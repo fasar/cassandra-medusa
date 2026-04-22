@@ -154,7 +154,6 @@ class EncryptionManager:
     def encrypt_file(self, src_path, dst_path):
         encrypted_hash = hashlib.md5()
         encrypted_size = 0
-        READ_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
 
         with open(src_path, 'rb') as f_in, open(dst_path, 'wb') as f_out:
             # Wrap f_in to calculate MD5 on the fly
@@ -168,7 +167,7 @@ class EncryptionManager:
                 algorithm=self.algorithm
             ) as encryptor:
                 while True:
-                    chunk = encryptor.read(READ_CHUNK_SIZE)
+                    chunk = encryptor.read(self.frame_length)
                     if not chunk:
                         break
                     # Update encrypted metrics
@@ -187,7 +186,6 @@ class EncryptionManager:
         )
 
     def decrypt_file(self, src_path, dst_path):
-        READ_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
         with open(src_path, 'rb') as f_in, open(dst_path, 'wb') as f_out:
             with self.client.stream(
                 mode='d',
@@ -195,7 +193,7 @@ class EncryptionManager:
                 materials_manager=self.cmm
             ) as decryptor:
                 while True:
-                    chunk = decryptor.read(READ_CHUNK_SIZE)
+                    chunk = decryptor.read(self.frame_length)
                     if not chunk:
                         break
                     f_out.write(chunk)
@@ -257,12 +255,11 @@ class EncryptedStream(EncryptionStreamBase):
         )
 
     def read(self, size=-1):
-        READ_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
         if size == -1:
             # Read everything
             chunks = [self.buffer] if self.buffer else []
             while True:
-                chunk = self.aws_stream.read(READ_CHUNK_SIZE)
+                chunk = self.aws_stream.read(self.manager.frame_length)
                 if not chunk:
                     break
                 chunks.append(chunk)
@@ -278,7 +275,7 @@ class EncryptedStream(EncryptionStreamBase):
             chunks = [self.buffer] if self.buffer else []
             current_len = len(self.buffer)
             while current_len < size:
-                chunk = self.aws_stream.read(READ_CHUNK_SIZE)
+                chunk = self.aws_stream.read(self.manager.frame_length)
                 if not chunk:
                     self.eof = True
                     break
@@ -318,12 +315,11 @@ class DecryptedStream(EncryptionStreamBase):
         self.plaintext_size = 0
 
     def read(self, size=-1):
-        READ_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
         if size == -1:
             # Read everything
             chunks = [self.buffer] if self.buffer else []
             while True:
-                chunk = self.aws_stream.read(READ_CHUNK_SIZE)
+                chunk = self.aws_stream.read(self.manager.frame_length)
                 if not chunk:
                     break
                 chunks.append(chunk)
@@ -339,7 +335,7 @@ class DecryptedStream(EncryptionStreamBase):
             chunks = [self.buffer] if self.buffer else []
             current_len = len(self.buffer)
             while current_len < size:
-                chunk = self.aws_stream.read(READ_CHUNK_SIZE)
+                chunk = self.aws_stream.read(self.manager.frame_length)
                 if not chunk:
                     self.eof = True
                     break

@@ -227,6 +227,45 @@ class EncryptionStreamBase(io.RawIOBase):
     def readall(self):
         return self.read()
 
+    def _update_metrics(self, chunk):
+        pass
+
+    def read(self, size=-1):
+        if size == -1:
+            # Read everything
+            chunks = [self.buffer] if self.buffer else []
+            while True:
+                chunk = self.aws_stream.read(self.manager.frame_length)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                self._update_metrics(chunk)
+
+            self.buffer = b""
+            self.eof = True
+            return b"".join(chunks)
+
+        # Fill buffer from iterator if we don't have enough data
+        if len(self.buffer) < size:
+            chunks = [self.buffer] if self.buffer else []
+            current_len = len(self.buffer)
+            while current_len < size:
+                chunk = self.aws_stream.read(self.manager.frame_length)
+                if not chunk:
+                    self.eof = True
+                    break
+                self._update_metrics(chunk)
+                chunks.append(chunk)
+                current_len += len(chunk)
+
+            self.buffer = b"".join(chunks)
+
+        # Return requested size from buffer
+        data = self.buffer[:size]
+        self.buffer = self.buffer[size:]
+
+        return data
+
     def close(self):
         if not self.closed:
             if self.aws_stream is not None and hasattr(self.aws_stream, 'close'):
@@ -254,43 +293,9 @@ class EncryptedStream(EncryptionStreamBase):
             algorithm=self.manager.algorithm
         )
 
-    def read(self, size=-1):
-        if size == -1:
-            # Read everything
-            chunks = [self.buffer] if self.buffer else []
-            while True:
-                chunk = self.aws_stream.read(self.manager.frame_length)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                self.encrypted_size += len(chunk)
-                self.encrypted_hash.update(chunk)
-
-            self.buffer = b""
-            self.eof = True
-            return b"".join(chunks)
-
-        # Fill buffer from iterator if we don't have enough data
-        if len(self.buffer) < size:
-            chunks = [self.buffer] if self.buffer else []
-            current_len = len(self.buffer)
-            while current_len < size:
-                chunk = self.aws_stream.read(self.manager.frame_length)
-                if not chunk:
-                    self.eof = True
-                    break
-                self.encrypted_size += len(chunk)
-                self.encrypted_hash.update(chunk)
-                chunks.append(chunk)
-                current_len += len(chunk)
-
-            self.buffer = b"".join(chunks)
-
-        # Return requested size from buffer
-        data = self.buffer[:size]
-        self.buffer = self.buffer[size:]
-
-        return data
+    def _update_metrics(self, chunk):
+        self.encrypted_size += len(chunk)
+        self.encrypted_hash.update(chunk)
 
     @property
     def source_size(self):
@@ -314,43 +319,9 @@ class DecryptedStream(EncryptionStreamBase):
         self.plaintext_hash = hashlib.md5()
         self.plaintext_size = 0
 
-    def read(self, size=-1):
-        if size == -1:
-            # Read everything
-            chunks = [self.buffer] if self.buffer else []
-            while True:
-                chunk = self.aws_stream.read(self.manager.frame_length)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                self.plaintext_size += len(chunk)
-                self.plaintext_hash.update(chunk)
-
-            self.buffer = b""
-            self.eof = True
-            return b"".join(chunks)
-
-        # Fill buffer from iterator if we don't have enough data
-        if len(self.buffer) < size:
-            chunks = [self.buffer] if self.buffer else []
-            current_len = len(self.buffer)
-            while current_len < size:
-                chunk = self.aws_stream.read(self.manager.frame_length)
-                if not chunk:
-                    self.eof = True
-                    break
-                self.plaintext_size += len(chunk)
-                self.plaintext_hash.update(chunk)
-                chunks.append(chunk)
-                current_len += len(chunk)
-
-            self.buffer = b"".join(chunks)
-
-        # Return requested size from buffer
-        data = self.buffer[:size]
-        self.buffer = self.buffer[size:]
-
-        return data
+    def _update_metrics(self, chunk):
+        self.plaintext_size += len(chunk)
+        self.plaintext_hash.update(chunk)
 
     @property
     def source_size(self):

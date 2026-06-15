@@ -17,6 +17,8 @@ import base64
 import hashlib
 import io
 
+CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
+
 try:
     import aws_encryption_sdk
     from aws_encryption_sdk import CommitmentPolicy

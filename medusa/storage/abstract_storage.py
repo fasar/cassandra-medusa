@@ -25,6 +25,7 @@ import pathlib
 import tempfile
 import os
 import shutil
+import threading
 import typing as t
 import re
 
@@ -93,6 +94,38 @@ class AbstractStorage(abc.ABC):
     def __init__(self, config):
         self.config = config
         self.bucket_name = config.bucket_name
+        self._encryption_manager = None
+        self._encryption_manager_lock = threading.Lock()
+
+    @property
+    def encryption_enabled(self) -> bool:
+        return bool(getattr(self.config, 'key_secret_base64', None))
+
+    @property
+    def encryption_manager(self):
+        """
+        One EncryptionManager per storage, not per file.
+
+        Building one sets up an SDK client, a raw key provider, a materials cache and a caching
+        materials manager. Doing that per file also meant every file started from an empty cache,
+        so the caching materials manager never got to reuse a data key across files - which is the
+        only reason it exists. Built lazily so that a storage configured without encryption never
+        needs aws-encryption-sdk installed.
+        """
+        if self._encryption_manager is None:
+            with self._encryption_manager_lock:
+                # another transfer thread may have built it while we waited for the lock
+                if self._encryption_manager is None:
+                    from medusa.storage.encryption import EncryptionManager, DEFAULT_FRAME_LENGTH
+                    frame_length = getattr(self.config, 'encryption_frame_length', None)
+                    # unset falls back to the default; anything else is validated, so that a typo
+                    # in medusa.ini is reported instead of being silently replaced
+                    if frame_length is None or frame_length == '':
+                        frame_length = DEFAULT_FRAME_LENGTH
+                    self._encryption_manager = EncryptionManager(
+                        self.config.key_secret_base64, frame_length
+                    )
+        return self._encryption_manager
 
     async def _download_object_as_stream(self, blob_key: str) -> t.BinaryIO:
         """
@@ -208,7 +241,7 @@ class AbstractStorage(abc.ABC):
         :return:
         """
         loop = self.get_or_create_event_loop()
-        if hasattr(self.config, 'key_secret_base64') and self.config.key_secret_base64:
+        if self.encryption_enabled:
             loop.run_until_complete(self._download_encrypted_blobs(srcs, dest))
         else:
             loop.run_until_complete(self._download_blobs(srcs, dest))
@@ -254,7 +287,7 @@ class AbstractStorage(abc.ABC):
     def _decrypt_stream_to_file(self, blob_stream, dest_path):
         from medusa.storage.encryption import DecryptedStream, STREAM_COPY_BLOCK_SIZE
         try:
-            dec_stream = DecryptedStream(blob_stream, self.config.key_secret_base64)
+            dec_stream = DecryptedStream(blob_stream, manager=self.encryption_manager)
             with open(dest_path, 'wb') as f_out:
                 shutil.copyfileobj(dec_stream, f_out, length=STREAM_COPY_BLOCK_SIZE)
         except Exception as e:
@@ -289,7 +322,7 @@ class AbstractStorage(abc.ABC):
         :return: a list of ManifestObject describing all the uploaded files
         """
         loop = self.get_or_create_event_loop()
-        if hasattr(self.config, 'key_secret_base64') and self.config.key_secret_base64:
+        if self.encryption_enabled:
             return loop.run_until_complete(self._upload_encrypted_blobs(srcs, dest))
         else:
             manifest_objects = loop.run_until_complete(self._upload_blobs(srcs, dest))
@@ -332,7 +365,7 @@ class AbstractStorage(abc.ABC):
 
         # Open the file and wrap it in EncryptedStream
         with open(src, 'rb') as f:
-            stream = EncryptedStream(f, self.config.key_secret_base64)
+            stream = EncryptedStream(f, manager=self.encryption_manager)
             manifest_object = await self._upload_object_from_stream(stream, object_key, {})
 
         return manifest_object

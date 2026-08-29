@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 import base64
 
 from medusa.storage.abstract_storage import AbstractStorage, ManifestObject, AbstractBlob
-from medusa.storage.encryption import EncryptionManager, HAS_AWS_CRYPT
+from medusa.storage.encryption import EncryptionManager, HAS_AWS_CRYPT, DEFAULT_FRAME_LENGTH
 
 
 class MockStorage(AbstractStorage):
@@ -130,7 +130,8 @@ class EncryptedStorageTest(unittest.TestCase):
             'bucket_name': 'test_bucket',
             'concurrent_transfers': '1',
             'key_secret_base64': self.key,
-            'encryption_tmp_dir': None
+            'encryption_tmp_dir': None,
+            'encryption_frame_length': 8388608
         }
 
         # Create a mock config object to access config_dict attributes via dot notation
@@ -357,6 +358,65 @@ class EncryptedStorageTest(unittest.TestCase):
             self.storage._download_blob.assert_called_once()
             # Ensure we did NOT try to stream/decrypt
             self.storage._download_object_as_stream.assert_not_called()
+
+
+@unittest.skipIf(not HAS_AWS_CRYPT, "aws-encryption-sdk is not installed")
+class EncryptionManagerReuseTest(unittest.TestCase):
+    """
+    Building an EncryptionManager sets up an SDK client, a key provider and a materials cache.
+    It has to be built once per storage, not once per file, otherwise the caching materials
+    manager starts from an empty cache for every single file.
+    """
+
+    def _storage(self, **overrides):
+        config_dict = {
+            'storage_provider': 'mock',
+            'bucket_name': 'test_bucket',
+            'concurrent_transfers': '1',
+            'key_secret_base64': base64.b64encode(os.urandom(32)).decode('utf-8'),
+            'encryption_tmp_dir': None,
+            'encryption_frame_length': 8388608,
+        }
+        config_dict.update(overrides)
+        config = MagicMock()
+        for k, v in config_dict.items():
+            setattr(config, k, v)
+        return MockStorage(config)
+
+    def test_manager_is_built_once_and_reused(self):
+        storage = self._storage()
+        self.assertIsNone(storage._encryption_manager)
+
+        first = storage.encryption_manager
+        second = storage.encryption_manager
+
+        self.assertIs(first, second)
+
+    def test_manager_is_not_built_when_encryption_is_disabled(self):
+        storage = self._storage(key_secret_base64=None)
+
+        self.assertFalse(storage.encryption_enabled)
+        self.assertIsNone(storage._encryption_manager)
+
+    def test_encryption_frame_length_is_honoured(self):
+        """Regression: the setting was declared and documented but never read by any code path."""
+        storage = self._storage(encryption_frame_length=65536)
+
+        self.assertEqual(storage.encryption_manager.frame_length, 65536)
+
+    def test_encryption_frame_length_falls_back_to_the_default_when_unset(self):
+        storage = self._storage(encryption_frame_length=None)
+
+        self.assertEqual(storage.encryption_manager.frame_length, DEFAULT_FRAME_LENGTH)
+
+    def test_invalid_frame_length_is_rejected_with_a_readable_error(self):
+        # The SDK would otherwise raise SerializationError from deep inside itself
+        for bad in (0, -16, 1000, 'not-a-number'):
+            with self.subTest(frame_length=bad):
+                storage = self._storage(encryption_frame_length=bad)
+                with self.assertRaises(ValueError) as cm:
+                    storage.encryption_manager
+                self.assertIn('encryption_frame_length', str(cm.exception))
 
 
 if __name__ == '__main__':

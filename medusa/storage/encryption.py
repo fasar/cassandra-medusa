@@ -36,6 +36,14 @@ except ImportError:
 # defaults to 64 KiB, which means thousands of Python-level read() calls per encryption frame.
 STREAM_COPY_BLOCK_SIZE = 1024 * 1024
 
+# Default AWS Encryption SDK frame size. Larger frames mean fewer per-frame headers and fewer
+# cryptographic operations; overridable through the encryption_frame_length setting.
+DEFAULT_FRAME_LENGTH = 8 * 1024 * 1024
+
+# The SDK requires the frame size to be a multiple of the AES block size, and reports a
+# violation with a SerializationError raised deep inside itself. We check it up front instead.
+AES_BLOCK_SIZE_BYTES = 16
+
 
 class HashingStreamWrapper(io.RawIOBase):
     """
@@ -103,7 +111,7 @@ class _StaticKeyProvider(RawMasterKeyProvider):
 class EncryptionManager:
     """Manages encryption and decryption of backup files using AWS Encryption SDK."""
 
-    def __init__(self, key_secret_base64, frame_length=8388608):
+    def __init__(self, key_secret_base64, frame_length=DEFAULT_FRAME_LENGTH):
         if not HAS_AWS_CRYPT:
             raise ImportError(
                 "aws-encryption-sdk is not installed. "
@@ -153,8 +161,23 @@ class EncryptionManager:
             max_messages_encrypted=100000,
             max_bytes_encrypted=100 * 1024 * 1024 * 1024  # 100 GB
         )
-        self.frame_length = int(frame_length)
+        self.frame_length = self._validate_frame_length(frame_length)
         self.algorithm = Algorithm.AES_256_GCM_HKDF_SHA512_COMMIT_KEY
+
+    @staticmethod
+    def _validate_frame_length(frame_length):
+        try:
+            frame_length = int(frame_length)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"encryption_frame_length must be an integer number of bytes, got {frame_length!r}"
+            )
+        if frame_length <= 0 or frame_length % AES_BLOCK_SIZE_BYTES != 0:
+            raise ValueError(
+                f"encryption_frame_length must be a positive multiple of {AES_BLOCK_SIZE_BYTES} bytes, "
+                f"got {frame_length}"
+            )
+        return frame_length
 
     def encrypt_file(self, src_path, dst_path):
         encrypted_hash = hashlib.md5()
@@ -205,14 +228,20 @@ class EncryptionManager:
 
 
 class EncryptionStreamBase(io.RawIOBase):
-    def __init__(self, source_stream, key_secret_base64, frame_length=8388608):
+    def __init__(self, source_stream, key_secret_base64=None, frame_length=DEFAULT_FRAME_LENGTH,
+                 manager=None):
+        """
+        :param manager: an existing EncryptionManager to reuse. Building one sets up an SDK client,
+            a key provider and a materials cache, so callers handling many files should build it
+            once and pass it here rather than paying for it per file.
+        """
         if not HAS_AWS_CRYPT:
             raise ImportError(
                 "aws-encryption-sdk is not installed. "
                 "Please install it using 'pip install cassandra-medusa[encryption]'"
             )
 
-        self.manager = EncryptionManager(key_secret_base64, frame_length)
+        self.manager = manager if manager is not None else EncryptionManager(key_secret_base64, frame_length)
         self.source_stream = source_stream
 
         self.output_hash = hashlib.md5()
@@ -298,8 +327,9 @@ class EncryptionStreamBase(io.RawIOBase):
 
 
 class EncryptedStream(EncryptionStreamBase):
-    def __init__(self, source_stream, key_secret_base64, frame_length=8388608):
-        super().__init__(source_stream, key_secret_base64, frame_length)
+    def __init__(self, source_stream, key_secret_base64=None, frame_length=DEFAULT_FRAME_LENGTH,
+                 manager=None):
+        super().__init__(source_stream, key_secret_base64, frame_length, manager)
 
         self.hashing_source = HashingStreamWrapper(source_stream)
 
@@ -325,8 +355,9 @@ class EncryptedStream(EncryptionStreamBase):
 
 
 class DecryptedStream(EncryptionStreamBase):
-    def __init__(self, source_stream, key_secret_base64, frame_length=8388608):
-        super().__init__(source_stream, key_secret_base64, frame_length)
+    def __init__(self, source_stream, key_secret_base64=None, frame_length=DEFAULT_FRAME_LENGTH,
+                 manager=None):
+        super().__init__(source_stream, key_secret_base64, frame_length, manager)
 
         self.aws_stream = self.manager.client.stream(
             mode='d',

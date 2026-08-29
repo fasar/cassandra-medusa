@@ -132,7 +132,10 @@ backup_grace_period_in_days = 10
 
 ;aws_cli_path = <Location of the aws cli binary if not in PATH>
 
-; Base64-encoded 32-byte encryption key (required for CSE)
+; Client-side encryption key, base64 encoded, 32 bytes once decoded (required for CSE).
+; Prefer key_secret_file, or the MEDUSA_KEY_SECRET_BASE64 environment variable, over writing
+; the key into this file. See docs/client_side_encryption.md.
+;key_secret_file = /etc/medusa/medusa-encryption-key
 ;key_secret_base64 = 
 
 ; Temporary directory for encryption/decryption operations (optional)
@@ -140,6 +143,10 @@ backup_grace_period_in_days = 10
 ; Directory must have sufficient space for concurrent file operations
 ; Note: This setting is ignored for S3 storage provider as it uses streaming encryption/decryption.
 ;encryption_tmp_dir = /tmp
+
+; Frame length in bytes used by the AWS Encryption SDK. Default is 8 MB (8388608).
+; Must be a positive multiple of 16. Larger frames lower CPU usage on large files.
+;encryption_frame_length = 8388608
 
 [monitoring]
 ;monitoring_provider = <Provider used for sending metrics. Currently just "local">

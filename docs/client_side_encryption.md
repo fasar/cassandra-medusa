@@ -53,21 +53,30 @@ Generate a 32-byte (256-bit) key and base64-encode it. For example:
 python3 -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
 ```
 
-This will output a base64-encoded key like:
-```
-DrMxa6NEhBuKcBqffvw675eHo/9J/W3WqXZ3spyI1/U=
-```
+This outputs a 44-character base64 string. Keep the output of your own command: never reuse a key
+that has been published anywhere, including the ones that appear in this repository's test
+configurations.
 
-### medusa.ini Configuration
+### Supplying the key
 
-Add the following parameters to the `[storage]` section:
+The key protects every backup you will ever take, so Medusa accepts it three ways. They are listed
+here from the most to the least appropriate for production:
+
+| How | Setting | Notes |
+|---|---|---|
+| A file readable only by the Medusa user | `key_secret_file`, or the `MEDUSA_KEY_SECRET_FILE` environment variable | Takes precedence over the other two. A trailing newline is ignored, so `echo "$KEY" > file` works. |
+| An environment variable | `MEDUSA_KEY_SECRET_BASE64` | Suits containers and Kubernetes secrets mounted as env vars. |
+| Directly in `medusa.ini` | `key_secret_base64` | Simplest, but puts the key in a file that configuration management usually templates and that is often readable more widely than the key deserves. |
 
 ```ini
 [storage]
 # ... other storage configuration ...
 
-# Base64-encoded 32-byte encryption key (required for CSE)
-key_secret_base64 = DrMxa6NEhBuKcBqffvw675eHo/9J/W3WqXZ3spyI1/U=
+# Preferred: point at a file that only the Medusa user can read
+key_secret_file = /etc/medusa/medusa-encryption-key
+
+# Or inline, if you accept the key living in this file
+;key_secret_base64 = <YOUR-BASE64-ENCODED-32-BYTE-KEY>
 
 # Temporary directory for encryption/decryption operations (optional)
 # Defaults to system temp directory if not specified
@@ -83,20 +92,48 @@ encryption_frame_length = 8388608
 
 ## Security Best Practices
 
-The configuration file containing the encryption key must be protected with restricted file permissions:
+Whichever file holds the key - `medusa.ini` or the file `key_secret_file` points at - must be
+readable only by the account running Medusa:
 
 ```bash
-chmod 0600 /path/to/medusa.ini
+chmod 0600 /etc/medusa/medusa-encryption-key
+chown cassandra:cassandra /etc/medusa/medusa-encryption-key
 ```
 
 Ensure that:
-- Only the user running Medusa has read/write access to the configuration file.
-- Group and other users have no access to the file.
-- The configuration file is owned by the appropriate user/service account.
+- Only the user running Medusa has read access to the key.
+- Group and other users have no access to it.
+- The key is owned by the appropriate user/service account.
 
+## Losing the key means losing the backups
 
-The encryption key is required to decrypt all encrypted backups. Without it, **data cannot be recovered**.
-So backup the key and test recovery procedures to verify you can restore encrypted backups.
+There is no recovery path. The key is not stored with the backups, not derivable from them, and not
+held by Medusa anywhere else. If it is lost, every encrypted backup taken with it becomes
+permanently unreadable.
+
+Before turning encryption on for a production cluster:
+
+1. Store the key somewhere independent of the cluster it protects - a secrets manager, not the node
+   being backed up, and not the same storage bucket as the backups.
+2. Make sure at least two people, or one automated process, can retrieve it.
+3. **Perform a full restore from an encrypted backup** on a scratch cluster, using only what your
+   recovery runbook says to use. A key that cannot be found during an incident is a key you do not
+   have.
+
+Rotating the key is not supported: Medusa decrypts with the key currently configured, so backups
+taken with a previous key stop being readable once you change it. Keep the old key for as long as
+you keep the backups it protects.
+
+## Turning encryption on for an existing cluster
+
+Encrypted and unencrypted files cannot share a differential backup chain: Medusa cannot compare a
+local file against an encrypted object without the plaintext metadata that only encrypted backups
+record. When you enable encryption on a node that already has differential backups, the next backup
+therefore re-uploads every SSTable, and previously uploaded files stay in place until they age out
+of `max_backup_count` / `backup_grace_period_in_days`.
+
+Plan for that first backup to be the size of a full one, and for storage usage to roughly double
+until the old chain is purged.
 
 ## Usage
 

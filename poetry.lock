@@ -2953,4 +2953,4 @@ encryption = ["aws-encryption-sdk"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10.0,<3.13"
-content-hash = "bb857118e73ccb6ab87baf97e046798390a76ac873f9e465cb1c9ed93e67254d"
+content-hash = "f452a2192663fc1b8a65b1ad3a2911c6817c745a1e7bfb082a7f97889f0031ca"

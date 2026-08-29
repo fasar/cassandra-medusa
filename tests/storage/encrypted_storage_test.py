@@ -412,7 +412,9 @@ class EncryptionManagerReuseTest(unittest.TestCase):
 
     def test_invalid_frame_length_is_rejected_with_a_readable_error(self):
         # The SDK would otherwise raise SerializationError from deep inside itself
-        for bad in (0, -16, 1000, 'not-a-number'):
+        # 16 and 32 matter: they are multiples of the AES block size in *bytes*, which is the
+        # wrong constant - the SDK wants a multiple of the block size as it reports it, 128.
+        for bad in (0, -128, 16, 32, 1000, 'not-a-number'):
             with self.subTest(frame_length=bad):
                 storage = self._storage(encryption_frame_length=bad)
                 with self.assertRaises(ValueError) as cm:

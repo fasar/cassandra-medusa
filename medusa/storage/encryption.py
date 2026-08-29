@@ -40,10 +40,6 @@ STREAM_COPY_BLOCK_SIZE = 1024 * 1024
 # cryptographic operations; overridable through the encryption_frame_length setting.
 DEFAULT_FRAME_LENGTH = 8 * 1024 * 1024
 
-# The SDK requires the frame size to be a multiple of the AES block size, and reports a
-# violation with a SerializationError raised deep inside itself. We check it up front instead.
-AES_BLOCK_SIZE_BYTES = 16
-
 
 class HashingStreamWrapper(io.RawIOBase):
     """
@@ -151,6 +147,9 @@ class EncryptionManager:
                 f"Expected 32 bytes (256 bits) when base64-decoded, but got {len(self.decoded_key)} bytes."
             )
 
+        self.algorithm = Algorithm.AES_256_GCM_HKDF_SHA512_COMMIT_KEY
+        self.frame_length = self._validate_frame_length(frame_length, self.algorithm)
+
         # Initialize AWS Encryption SDK client
         self.client = aws_encryption_sdk.EncryptionSDKClient(
             commitment_policy=CommitmentPolicy.REQUIRE_ENCRYPT_REQUIRE_DECRYPT
@@ -172,20 +171,25 @@ class EncryptionManager:
             max_messages_encrypted=100000,
             max_bytes_encrypted=100 * 1024 * 1024 * 1024  # 100 GB
         )
-        self.frame_length = self._validate_frame_length(frame_length)
-        self.algorithm = Algorithm.AES_256_GCM_HKDF_SHA512_COMMIT_KEY
 
     @staticmethod
-    def _validate_frame_length(frame_length):
+    def _validate_frame_length(frame_length, algorithm):
+        """
+        The SDK requires the frame length to be a positive multiple of the algorithm block size,
+        and reports a violation with a SerializationError raised from deep inside itself, naming
+        neither the setting nor the offending value. Take the constraint from the algorithm rather
+        than hardcoding it, so the two cannot drift apart.
+        """
+        block_size = algorithm.encryption_algorithm.block_size
         try:
             frame_length = int(frame_length)
         except (TypeError, ValueError):
             raise ValueError(
                 f"encryption_frame_length must be an integer number of bytes, got {frame_length!r}"
             )
-        if frame_length <= 0 or frame_length % AES_BLOCK_SIZE_BYTES != 0:
+        if frame_length <= 0 or frame_length % block_size != 0:
             raise ValueError(
-                f"encryption_frame_length must be a positive multiple of {AES_BLOCK_SIZE_BYTES} bytes, "
+                f"encryption_frame_length must be a positive multiple of {block_size}, "
                 f"got {frame_length}"
             )
         return frame_length

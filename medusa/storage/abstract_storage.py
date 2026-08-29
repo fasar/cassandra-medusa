@@ -40,10 +40,29 @@ MULTIPART_BLOCKS_PER_MB = 16
 MAX_UP_DOWN_LOAD_RETRIES = 5
 
 
-# Metadata files that are always stored as plaintext (not encrypted) for compatibility and accessibility
+# Backup metadata (tokenmap.json, schema.cql, manifest.json, server_version.json, the
+# differential/incremental markers, backup_name.txt) is always stored as plaintext, so that a
+# backup stays inspectable and its index usable without the encryption key.
 PLAINTEXT_FILES_REGEX = re.compile(
-    '.*(tokenmap|schema|manifest|differential|incremental|server_version|backup_name)(.*)$'
+    '.*(tokenmap|schema|manifest|differential|incremental|server_version|backup_name|restore_verify_query)(.*)$'
 )
+
+
+def is_plaintext_object(name: str) -> bool:
+    """
+    Whether an object is stored unencrypted even when client-side encryption is on.
+
+    Upload and download have to agree on this, otherwise a file is written one way and read the
+    other, which corrupts it silently. Today metadata never reaches the encrypting upload path -
+    it is written through upload_blob_from_string() - so the two sides agree by construction
+    rather than by contract. This predicate makes the contract explicit and gives both sides a
+    single place to consult.
+
+    Matching is on the base name only: SSTable components (Data.db, Index.db, Digest.crc32, ...)
+    never carry any of these words, so a user table named e.g. "schema_history" is unaffected.
+    """
+    return bool(PLAINTEXT_FILES_REGEX.match(name))
+
 
 AbstractBlob = collections.namedtuple('AbstractBlob', ['name', 'size', 'hash', 'last_modified', 'storage_class'])
 
@@ -268,7 +287,7 @@ class AbstractStorage(abc.ABC):
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         # If it is a plaintext file, just download it directly
-        if PLAINTEXT_FILES_REGEX.match(src_path.name):
+        if is_plaintext_object(src_path.name):
             await self._download_blob(src, dest)
             return
 
@@ -355,6 +374,16 @@ class AbstractStorage(abc.ABC):
 
         src_path = Path(src)
         object_key = AbstractStorage.path_maybe_with_parent(dest, src_path)
+
+        # Mirror the download side: it never decrypts these, so encrypting one here would write an
+        # object that can no longer be restored. Metadata is written through
+        # upload_blob_from_string() and should never reach this path, hence the warning.
+        if is_plaintext_object(src_path.name):
+            logging.warning(
+                '[Storage] {} matches the plaintext metadata naming and will be uploaded '
+                'unencrypted, to stay readable on restore'.format(src)
+            )
+            return await self._upload_blob(src, dest)
 
         file_size = os.stat(src).st_size
         logging.debug(

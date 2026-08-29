@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 import base64
 
 from medusa.storage.abstract_storage import AbstractStorage, ManifestObject, AbstractBlob
+from medusa.storage.abstract_storage import is_plaintext_object
 from medusa.storage.encryption import EncryptionManager, HAS_AWS_CRYPT, DEFAULT_FRAME_LENGTH
 
 
@@ -417,6 +418,70 @@ class EncryptionManagerReuseTest(unittest.TestCase):
                 with self.assertRaises(ValueError) as cm:
                     storage.encryption_manager
                 self.assertIn('encryption_frame_length', str(cm.exception))
+
+
+class PlaintextObjectPredicateTest(unittest.TestCase):
+    """
+    Characterization tests for is_plaintext_object().
+
+    Upload and download must agree on which objects are stored unencrypted; if they disagree, a
+    file is written one way and read the other and is silently corrupted. These tests pin both
+    sides of the answer against real object names.
+    """
+
+    # Every metadata file NodeBackup writes - see node_backup.py, where _meta_path is joined with
+    # each of these. A new metadata file added there must be added here too.
+    METADATA_FILES = [
+        'tokenmap.json',
+        'schema.cql',
+        'manifest.json',
+        'incremental',
+        'differential',
+        'restore_verify_query.json',
+        'server_version.json',
+    ]
+
+    # The index also stores per-node copies, named with the node fqdn
+    INDEXED_METADATA_FILES = [
+        'tokenmap_127.0.0.1.json',
+        'schema_127.0.0.1.cql',
+        'manifest_127.0.0.1.json',
+        'backup_name.txt',
+    ]
+
+    # Every component Cassandra writes for an SSTable
+    SSTABLE_FILES = [
+        'nb-1-big-Data.db',
+        'nb-1-big-Index.db',
+        'nb-1-big-Filter.db',
+        'nb-1-big-Summary.db',
+        'nb-1-big-Statistics.db',
+        'nb-1-big-CompressionInfo.db',
+        'nb-1-big-Digest.crc32',
+        'nb-1-big-TOC.txt',
+    ]
+
+    def test_backup_metadata_is_never_encrypted(self):
+        for name in self.METADATA_FILES + self.INDEXED_METADATA_FILES:
+            with self.subTest(name=name):
+                self.assertTrue(is_plaintext_object(name))
+
+    def test_sstable_components_are_always_encrypted(self):
+        for name in self.SSTABLE_FILES:
+            with self.subTest(name=name):
+                self.assertFalse(is_plaintext_object(name))
+
+    def test_the_predicate_must_be_given_a_base_name_not_a_path(self):
+        """
+        The regex is a "contains" match, so a full path would pick up words from directories: a
+        user table named "schema_history" would make every one of its SSTables look like metadata
+        and be restored still encrypted. _download_encrypted_blob() passes Path(src).name for
+        exactly this reason, and this test is here so it stays that way.
+        """
+        full_path = 'storage_prefix/127.0.0.1/backup1/data/ks/schema_history-abc123/nb-1-big-Data.db'
+
+        self.assertTrue(is_plaintext_object(full_path), "a full path matches - this is the trap")
+        self.assertFalse(is_plaintext_object(pathlib.Path(full_path).name))
 
 
 if __name__ == '__main__':

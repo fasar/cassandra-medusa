@@ -32,6 +32,11 @@ except ImportError:
     RawMasterKeyProvider = object
 
 
+# Block size used when copying through an EncryptedStream / DecryptedStream. shutil.copyfileobj()
+# defaults to 64 KiB, which means thousands of Python-level read() calls per encryption frame.
+STREAM_COPY_BLOCK_SIZE = 1024 * 1024
+
+
 class HashingStreamWrapper(io.RawIOBase):
     """
     Wraps a stream to calculate MD5 and size of data read from it.
@@ -213,7 +218,12 @@ class EncryptionStreamBase(io.RawIOBase):
         self.output_hash = hashlib.md5()
         self.output_size = 0
 
-        self.buffer = b""
+        # Data pulled from the SDK stream but not yet handed to the caller. We track how much of
+        # it was already consumed instead of re-slicing on every read: the SDK produces whole
+        # frames (8 MiB by default) while callers such as shutil.copyfileobj() and boto3 read in
+        # much smaller blocks, so re-slicing copied the frame remainder on every single read.
+        self.buffer = bytearray()
+        self._buffer_pos = 0
 
         self.aws_stream = None
 
@@ -223,41 +233,57 @@ class EncryptionStreamBase(io.RawIOBase):
     def seekable(self):
         return False
 
+    def _buffered(self):
+        return len(self.buffer) - self._buffer_pos
+
+    def _pull_frame(self):
+        """Read one frame from the SDK stream, accounting for its size and hash."""
+        chunk = self.aws_stream.read(self.manager.frame_length)
+        if chunk:
+            self.output_size += len(chunk)
+            self.output_hash.update(chunk)
+        return chunk
+
+    def _discard_consumed(self):
+        # Drop the already-consumed prefix, but only once it accounts for at least half of the
+        # buffer. That keeps the copy amortized to O(1) per byte instead of O(buffer) per read.
+        if self._buffer_pos and self._buffer_pos * 2 >= len(self.buffer):
+            del self.buffer[:self._buffer_pos]
+            self._buffer_pos = 0
+
     def read(self, size=-1):
-        if size == -1:
-            # Read everything
-            chunks = [self.buffer] if self.buffer else []
+        if size is None or size < 0:
+            # Read everything that is left
             while True:
-                chunk = self.aws_stream.read(self.manager.frame_length)
+                chunk = self._pull_frame()
                 if not chunk:
                     break
-                chunks.append(chunk)
-                self.output_size += len(chunk)
-                self.output_hash.update(chunk)
+                self.buffer += chunk
 
-            self.buffer = b""
-            return b"".join(chunks)
+            data = bytes(self.buffer[self._buffer_pos:])
+            self.buffer = bytearray()
+            self._buffer_pos = 0
+            return data
 
-        # Fill buffer from iterator if we don't have enough data
-        if len(self.buffer) < size:
-            chunks = [self.buffer] if self.buffer else []
-            current_len = len(self.buffer)
-            while current_len < size:
-                chunk = self.aws_stream.read(self.manager.frame_length)
-                if not chunk:
-                    break
-                self.output_size += len(chunk)
-                self.output_hash.update(chunk)
-                chunks.append(chunk)
-                current_len += len(chunk)
+        # Pull frames until we can satisfy the request, or the SDK stream is exhausted
+        while self._buffered() < size:
+            chunk = self._pull_frame()
+            if not chunk:
+                break
+            self.buffer += chunk
 
-            self.buffer = b"".join(chunks)
-
-        # Return requested size from buffer
-        data = self.buffer[:size]
-        self.buffer = self.buffer[size:]
+        data = bytes(self.buffer[self._buffer_pos:self._buffer_pos + size])
+        self._buffer_pos += len(data)
+        self._discard_consumed()
 
         return data
+
+    def readinto(self, b):
+        # io.RawIOBase leaves readinto() unimplemented, which breaks any caller wrapping us in an
+        # io.BufferedReader. Implement it on top of read() so those callers keep working.
+        data = self.read(len(b))
+        b[:len(data)] = data
+        return len(data)
 
     def readall(self):
         return self.read()

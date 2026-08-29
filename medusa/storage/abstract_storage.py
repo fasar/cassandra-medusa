@@ -252,11 +252,11 @@ class AbstractStorage(abc.ABC):
         await loop.run_in_executor(executor, self._decrypt_stream_to_file, blob_stream, dest_path)
 
     def _decrypt_stream_to_file(self, blob_stream, dest_path):
-        from medusa.storage.encryption import DecryptedStream
+        from medusa.storage.encryption import DecryptedStream, STREAM_COPY_BLOCK_SIZE
         try:
             dec_stream = DecryptedStream(blob_stream, self.config.key_secret_base64)
             with open(dest_path, 'wb') as f_out:
-                shutil.copyfileobj(dec_stream, f_out, length=8192)
+                shutil.copyfileobj(dec_stream, f_out, length=STREAM_COPY_BLOCK_SIZE)
         except Exception as e:
             logging.error(f"Error streaming download/decrypt: {e}")
             if dest_path.exists():
@@ -345,13 +345,15 @@ class AbstractStorage(abc.ABC):
         Child classes should override this to support streaming uploads (e.g. boto3 upload_fileobj).
         Default implementation spools the stream to a temporary file on disk to avoid OOM on large files.
         """
+        from medusa.storage.encryption import STREAM_COPY_BLOCK_SIZE
+
         logging.debug(f"Using default file-spooling fallback for upload of {object_key}")
 
         encryption_tmp_dir = self.config.encryption_tmp_dir if hasattr(self.config, 'encryption_tmp_dir') else None
 
         with tempfile.NamedTemporaryFile(dir=encryption_tmp_dir, delete=True) as tmp:
             # Write stream to temporary file to avoid loading entire file in memory
-            shutil.copyfileobj(stream, tmp, length=8192)
+            shutil.copyfileobj(stream, tmp, length=STREAM_COPY_BLOCK_SIZE)
             tmp.flush()
             tmp.seek(0)
 

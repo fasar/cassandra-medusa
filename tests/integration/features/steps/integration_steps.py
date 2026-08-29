@@ -32,6 +32,7 @@ from ssl import SSLContext, PROTOCOL_TLS, PROTOCOL_TLSv1_2, CERT_REQUIRED
 from subprocess import PIPE
 from zipfile import ZipFile
 
+import botocore.exceptions
 import cassandra
 import cassandra.cluster
 import requests
@@ -705,8 +706,8 @@ def get_medusa_config(context, storage_provider, client_encryption, cassandra_ur
     else:
         config_file = Path(os.path.join(os.path.abspath("."), f'resources/config/medusa-{storage_provider}.ini'))
 
-    create_storage_specific_resources(storage_provider)
     config = medusa.config.load_config(args, config_file)
+    create_storage_specific_resources(storage_provider, config)
     return config
 
 
@@ -717,16 +718,40 @@ def parse_medusa_config(
     args = get_args(context, client_encryption, cassandra_url, use_mgmt_api, grpc,
                     ca_cert, tls_cert, tls_key)
     config_file = Path(os.path.join(os.path.abspath("."), f'resources/config/medusa-{storage_provider}.ini'))
-    create_storage_specific_resources(storage_provider)
     config = medusa.config.parse_config(args, config_file)
     return config
 
 
-def create_storage_specific_resources(storage_provider):
+def create_storage_specific_resources(storage_provider, config=None):
     if storage_provider == "local":
         if os.path.isdir(os.path.join("/tmp", "medusa_it_bucket")):
             shutil.rmtree(os.path.join("/tmp", "medusa_it_bucket"))
         os.makedirs(os.path.join("/tmp", "medusa_it_bucket"))
+    elif storage_provider.startswith("minio") and config is not None:
+        create_minio_bucket(config)
+
+
+def create_minio_bucket(config):
+    """
+    Create the bucket the MinIO configuration points at, if it is not there yet.
+
+    MinIO runs locally for the integration tests, so unlike the cloud backends nothing else creates
+    its buckets. The plaintext and the client-side encryption configurations deliberately use
+    different buckets, and a config pointing at a bucket nobody creates fails in a particularly
+    unhelpful way - the S3 client retries until the whole run times out. Creating it here keeps the
+    suite runnable with nothing but a running MinIO.
+
+    Only MinIO: the cloud backends run against real accounts, where creating buckets on the fly
+    would be presumptuous at best.
+    """
+    bucket_name = config.storage.bucket_name
+    with Storage(config=config.storage) as storage:
+        s3_client = storage.storage_driver.s3_client
+        try:
+            s3_client.head_bucket(Bucket=bucket_name)
+        except botocore.exceptions.ClientError:
+            logging.info(f"Creating MinIO bucket {bucket_name}")
+            s3_client.create_bucket(Bucket=bucket_name)
 
 
 @when(r'I create the "{table_name}" table in keyspace "{keyspace_name}"')

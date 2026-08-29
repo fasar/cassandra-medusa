@@ -257,11 +257,7 @@ jobs:
           # MinIO Object Storage tests
           unset AWS_ACCESS_KEY_ID
           unset AWS_SECRET_ACCESS_KEY
-          wget https://dl.min.io/client/mc/release/linux-amd64/mc
-          chmod +x mc
-          ./mc alias set minio http://127.0.0.1:9000 minio_key minio_secret
-          ./mc mb minio/medusa-dev
-          ./mc mb minio/medusa-it-encrypted
+          # the suite creates the buckets its MinIO configs point at, so no mc client is needed
           cp ./tests/resources/minio/minio_credentials ~/.aws/minio_credentials
           ./run_integration_tests.sh -v --minio --no-local --cassandra-version=${{ matrix.cassandra-version }} 
         elif [ "${{ matrix.it-backend }}" == "azure" ]

@@ -437,16 +437,27 @@ def check_already_uploaded(
 
 
 def make_manifest_object(fqdn, snapshot_path, manifest_objects, storage):
-    return {
-        'keyspace': snapshot_path.keyspace,
-        'columnfamily': snapshot_path.columnfamily,
-        'objects': [{
+    # source_MD5 and source_size describe the file before encryption, so they only mean something
+    # for an encrypted backup. Emitting them as nulls everywhere would change the manifest of every
+    # existing non-encrypted deployment - and the manifest is a public artifact, read by medusa
+    # verify, by restore and by tooling outside this repository.
+    encryption_enabled = bool(storage.config.key_secret_base64)
+
+    def describe(manifest_object):
+        described = {
             'path': url_to_path(manifest_object.path, fqdn, storage),
             'MD5': manifest_object.MD5,
             'size': manifest_object.size,
-            'source_MD5': manifest_object.source_MD5,
-            'source_size': manifest_object.source_size,
-        } for manifest_object in manifest_objects]
+        }
+        if encryption_enabled:
+            described['source_MD5'] = manifest_object.source_MD5
+            described['source_size'] = manifest_object.source_size
+        return described
+
+    return {
+        'keyspace': snapshot_path.keyspace,
+        'columnfamily': snapshot_path.columnfamily,
+        'objects': [describe(manifest_object) for manifest_object in manifest_objects]
     }
 
 

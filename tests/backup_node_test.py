@@ -176,6 +176,47 @@ class BackupNodeTest(unittest.TestCase):
         self.assertEqual([], t2_already_up)
 
 
+class MakeManifestObjectTest(unittest.TestCase):
+    """
+    The manifest is a public artifact: medusa verify, restore and third-party tooling read it.
+    source_MD5 / source_size describe the file before encryption and only mean something for an
+    encrypted backup, so they must not appear at all in the manifest of a plaintext one.
+    """
+
+    def _storage(self, key_secret_base64):
+        storage = MagicMock()
+        storage.config.key_secret_base64 = key_secret_base64
+        storage.prefix_path = ''
+        return storage
+
+    def _manifest(self, key_secret_base64, manifest_object):
+        snapshot_path = MagicMock()
+        snapshot_path.keyspace = 'medusa'
+        snapshot_path.columnfamily = 'test'
+        return backup_node.make_manifest_object(
+            'node1', snapshot_path, [manifest_object], self._storage(key_secret_base64)
+        )
+
+    def test_plaintext_backup_manifest_keeps_the_original_shape(self):
+        entry = self._manifest(
+            None, ManifestObject('node1/data/medusa/test/f.db', 100, 'md5')
+        )['objects'][0]
+
+        self.assertEqual(sorted(entry.keys()), ['MD5', 'path', 'size'])
+
+    def test_encrypted_backup_manifest_carries_the_plaintext_metadata(self):
+        entry = self._manifest(
+            'a-key', ManifestObject('node1/data/medusa/test/f.db', 120, 'enc-md5', 100, 'src-md5')
+        )['objects'][0]
+
+        self.assertEqual(sorted(entry.keys()), ['MD5', 'path', 'size', 'source_MD5', 'source_size'])
+        # size/MD5 describe the object in storage, source_* describe the local file
+        self.assertEqual(entry['size'], 120)
+        self.assertEqual(entry['MD5'], 'enc-md5')
+        self.assertEqual(entry['source_size'], 100)
+        self.assertEqual(entry['source_MD5'], 'src-md5')
+
+
 if __name__ == '__main__':
     unittest.main()
 

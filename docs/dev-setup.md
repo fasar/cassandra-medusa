@@ -132,16 +132,20 @@ Install libs for cassandra-medusa
 # For debian only:
 pip install keyring secretstorage
 # Install Test helpers
-pyenv shell 3.10.19
-pyenv local 3.10.19
 poetry install
 poetry run pip install git+https://github.com/riptano/ccm.git
 cd .   # This is important. Otherwise, CCM will not work. Or restart shell session.
-ccm
-
-# OU parfois
 poetry run ccm
 ```
+
+To work on client-side encryption, install the optional `encryption` extra as well:
+
+```bash
+poetry install --extras encryption
+```
+
+Without it, the encryption code raises an explicit `ImportError` and its unit tests are skipped,
+which is a supported configuration - the CI runs the test suite both with and without the extra.
 
 If `ccm` application is not working, restart your shell and go in cassandra-medusa folder.  
 
@@ -152,8 +156,10 @@ If `ccm` application is not working, restart your shell and go in cassandra-medu
 poetry run flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 # Another check
 poetry run flake8 . --count --exit-zero --max-complexity=10 --statistics --ignore=W503
-# Run unit test
-poetry run tox
+# Run unit tests for one interpreter, as the CI does
+poetry run tox -e py311
+# ... and the same with the encryption extra installed
+poetry run tox -e py311-encryption
 
 # run integration tests (local/minio/gcs/s3 etc.)
 ./run_integration_tests.sh --cassandra-version=4.1.9

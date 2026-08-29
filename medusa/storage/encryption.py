@@ -82,6 +82,11 @@ class _StaticKeyProvider(RawMasterKeyProvider):
 
     provider_id = "medusa-backup"
 
+    # configure() must run before the provider is used. Declaring the attributes here means an
+    # unconfigured provider raises the explicit error below instead of an AttributeError.
+    _key_name = None
+    _key_bytes = None
+
     def configure(self, key_name: str, key_bytes: bytes):
         """
         Explicitly configures the key name and bytes since they cannot be safely
@@ -97,6 +102,9 @@ class _StaticKeyProvider(RawMasterKeyProvider):
         This method is required by the `RawMasterKeyProvider` parent class
         from the AWS Encryption SDK.
         """
+        if self._key_name is None:
+            raise ValueError("Key provider was not configured, call configure() before using it")
+
         key_id_str = key_id.decode('utf-8') if isinstance(key_id, bytes) else key_id
         expected_id = self._key_name.decode('utf-8') if isinstance(self._key_name, bytes) else self._key_name
         if key_id_str == expected_id:
@@ -105,7 +113,10 @@ class _StaticKeyProvider(RawMasterKeyProvider):
                 wrapping_key=self._key_bytes,
                 wrapping_key_type=EncryptionKeyType.SYMMETRIC
             )
-        raise ValueError("Invalid key id")
+        # the key id is not secret, and without it this error is impossible to act on
+        raise ValueError(
+            "Unknown key id {!r}, this provider only holds {!r}".format(key_id_str, expected_id)
+        )
 
 
 class EncryptionManager:

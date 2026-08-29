@@ -121,6 +121,18 @@ class AbstractStorage(abc.ABC):
         return bool(getattr(self.config, 'key_secret_base64', None))
 
     @property
+    def encryption_tmp_dir(self):
+        """
+        Where backends without a streaming implementation spool encrypted data. None means the
+        system default.
+
+        These backends write a full copy of every file, up to concurrent_transfers of them at the
+        same time, so this needs to point somewhere with room: on a Cassandra node /tmp is often a
+        small tmpfs, and an SSTable is not small.
+        """
+        return getattr(self.config, 'encryption_tmp_dir', None) or None
+
+    @property
     def encryption_manager(self):
         """
         One EncryptionManager per storage, not per file.
@@ -152,9 +164,8 @@ class AbstractStorage(abc.ABC):
         Default implementation downloads the blob to a temporary file on disk.
         """
         logging.debug(f"Using default file-spooling fallback for download of {blob_key}")
-        encryption_tmp_dir = self.config.encryption_tmp_dir if hasattr(self.config, 'encryption_tmp_dir') else None
 
-        temp_dir = tempfile.mkdtemp(dir=encryption_tmp_dir)
+        temp_dir = tempfile.mkdtemp(dir=self.encryption_tmp_dir, prefix='medusa-cse-')
 
         try:
             await self._download_blob(blob_key, temp_dir)
@@ -411,9 +422,8 @@ class AbstractStorage(abc.ABC):
 
         logging.debug(f"Using default file-spooling fallback for upload of {object_key}")
 
-        encryption_tmp_dir = self.config.encryption_tmp_dir if hasattr(self.config, 'encryption_tmp_dir') else None
-
-        with tempfile.NamedTemporaryFile(dir=encryption_tmp_dir, delete=True) as tmp:
+        with tempfile.NamedTemporaryFile(dir=self.encryption_tmp_dir, prefix='medusa-cse-',
+                                         delete=True) as tmp:
             # Write stream to temporary file to avoid loading entire file in memory
             shutil.copyfileobj(stream, tmp, length=STREAM_COPY_BLOCK_SIZE)
             tmp.flush()

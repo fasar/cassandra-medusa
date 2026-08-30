@@ -70,7 +70,11 @@ class EncryptionManagerTest(unittest.TestCase):
                 f.write(content)
 
             # Encrypt
-            _, enc_size, _, src_size = self.manager.encrypt_file(src_path, enc_path)
+            result = self.manager.encrypt_file(src_path, enc_path)
+            enc_size, src_size = result.encrypted_size, result.source_size
+            # the fields are named, so a caller no longer has to count tuple positions
+            self.assertEqual(result.source_size, os.path.getsize(src_path))
+            self.assertNotEqual(result.md5_source, result.md5_encrypted)
 
             self.assertEqual(src_size, len(content))
             self.assertTrue(os.path.exists(enc_path))

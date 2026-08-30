@@ -81,15 +81,22 @@ class ObjectDoesNotExistError(Exception):
 
 
 class DeleteDirectoryOnCloseWrapper:
+    """
+    A file object that removes a whole directory once it is closed.
+
+    _download_object_as_stream() spools a blob into a temporary directory and hands the caller a
+    handle on it. Nobody else knows that directory exists, so its lifetime is tied to the handle:
+    closing the file - however the caller does it, explicitly or through a with block - is what
+    cleans it up.
+    """
+
     def __init__(self, file_obj, dir_path):
         self.file_obj = file_obj
         self.dir_path = dir_path
 
     def __getattr__(self, name):
+        # everything except close() and the context manager goes straight to the wrapped file
         return getattr(self.file_obj, name)
-
-    def read(self, *args, **kwargs):
-        return self.file_obj.read(*args, **kwargs)
 
     def close(self):
         self.file_obj.close()

@@ -16,6 +16,7 @@
 import base64
 import hashlib
 import io
+import typing as t
 
 try:
     import aws_encryption_sdk
@@ -41,6 +42,19 @@ STREAM_COPY_BLOCK_SIZE = 1024 * 1024
 DEFAULT_FRAME_LENGTH = 8 * 1024 * 1024
 
 
+class EncryptionResult(t.NamedTuple):
+    """
+    What encrypt_file() produced: the object as it will be stored, and the file it came from.
+
+    Both pairs are needed because the manifest records the encrypted size and hash to check the
+    stored object, and the plaintext ones to compare against the local file without decrypting.
+    """
+    md5_encrypted: str
+    encrypted_size: int
+    md5_source: str
+    source_size: int
+
+
 class HashingStreamWrapper(io.RawIOBase):
     """
     Wraps a stream to calculate MD5 and size of data read from it.
@@ -61,6 +75,13 @@ class HashingStreamWrapper(io.RawIOBase):
             self.size += len(chunk)
         return chunk
 
+    def readinto(self, b):
+        # io.RawIOBase leaves readinto() unimplemented; EncryptionStreamBase implements it for the
+        # same reason, and these two wrappers should behave alike.
+        data = self.read(len(b))
+        b[:len(data)] = data
+        return len(data)
+
     def readall(self):
         return self.read()
 
@@ -80,6 +101,8 @@ class _StaticKeyProvider(RawMasterKeyProvider):
     raw cryptographic key (WrappingKey) corresponding to the requested key ID.
     """
 
+    # Written into the header of every encrypted object and used to look the key up at decryption
+    # time. Part of the on-disk format: changing it makes every existing backup undecryptable.
     provider_id = "medusa-backup"
 
     # configure() must run before the provider is used. Declaring the attributes here means an
@@ -159,14 +182,19 @@ class EncryptionManager:
             commitment_policy=CommitmentPolicy.REQUIRE_ENCRYPT_REQUIRE_DECRYPT
         )
 
-        self.key_provider = "medusa-backup"
+        # Like provider_id above, this is written into every encrypted object's header and is what
+        # the key is looked up by at decryption time. Frozen: renaming it strands every backup.
         self.key_name = "raw-aes-key"
 
         self.master_key_provider = _StaticKeyProvider()
         self.master_key_provider.configure(self.key_name, self.decoded_key)
         self.master_key_provider.add_master_key(self.key_name)
 
-        # Initialize cache and CMM to prevent generating a new data key for each file
+        # Reuse one data key across files instead of deriving a new one per file. This is safe
+        # because the algorithm suite derives a distinct per-message key from the cached data key,
+        # and the three limits below bound how far a single data key travels: at most an hour, a
+        # hundred thousand files, or 100 GB - whichever comes first. Lower them if a shorter
+        # blast radius per data key is wanted; the cost is more key derivations.
         self.cache = LocalCryptoMaterialsCache(capacity=100)
         self.cmm = CachingCryptoMaterialsManager(
             master_key_provider=self.master_key_provider,
@@ -225,11 +253,11 @@ class EncryptionManager:
             source_size = hashing_source.size
             source_hash = hashing_source.hash
 
-        return (
-            base64.b64encode(encrypted_hash.digest()).decode('utf-8').strip(),
-            encrypted_size,
-            base64.b64encode(source_hash.digest()).decode('utf-8').strip(),
-            source_size
+        return EncryptionResult(
+            md5_encrypted=base64.b64encode(encrypted_hash.digest()).decode('utf-8').strip(),
+            encrypted_size=encrypted_size,
+            md5_source=base64.b64encode(source_hash.digest()).decode('utf-8').strip(),
+            source_size=source_size,
         )
 
     def decrypt_file(self, src_path, dst_path):

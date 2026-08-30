@@ -359,7 +359,9 @@ def backup_snapshots(storage, manifest, node_backup, snapshot, enable_md5_checks
                 for obj in already_backed_up:
                     manifest_objects.append(obj)
 
-            manifest.append(make_manifest_object(node_backup.fqdn, snapshot_path, manifest_objects, storage))
+            manifest.append(make_manifest_object(
+                node_backup.fqdn, snapshot_path, manifest_objects, storage,
+                is_differential=node_backup.is_differential))
 
         return num_files, replaced, kept
     except Exception as e:
@@ -436,12 +438,17 @@ def check_already_uploaded(
     return needs_backup, needs_reupload, already_backed_up
 
 
-def make_manifest_object(fqdn, snapshot_path, manifest_objects, storage):
-    # source_MD5 and source_size describe the file before encryption, so they only mean something
-    # for an encrypted backup. Emitting them as nulls everywhere would change the manifest of every
-    # existing non-encrypted deployment - and the manifest is a public artifact, read by medusa
-    # verify, by restore and by tooling outside this repository.
-    encryption_enabled = bool(storage.config.key_secret_base64)
+def make_manifest_object(fqdn, snapshot_path, manifest_objects, storage, is_differential=False):
+    # source_MD5 and source_size describe the file *before* encryption. Only differential backups
+    # read them back - check_already_uploaded() uses them to tell whether a local file is already
+    # in storage without decrypting anything - so only differential backups need to write them.
+    #
+    # Writing them anywhere else costs something: source_MD5 is a hash of the plaintext, stored in
+    # the clear next to the ciphertext, which hands anyone with read access to the bucket a way to
+    # confirm a guessed plaintext without the key. And for an unencrypted backup they would be two
+    # null fields added to the manifest of every existing deployment, for nothing - the manifest is
+    # a public artifact, read by medusa verify, by restore, and by tooling outside this repository.
+    describe_source = is_differential and bool(storage.config.key_secret_base64)
 
     def describe(manifest_object):
         described = {
@@ -449,7 +456,7 @@ def make_manifest_object(fqdn, snapshot_path, manifest_objects, storage):
             'MD5': manifest_object.MD5,
             'size': manifest_object.size,
         }
-        if encryption_enabled:
+        if describe_source:
             described['source_MD5'] = manifest_object.source_MD5
             described['source_size'] = manifest_object.source_size
         return described

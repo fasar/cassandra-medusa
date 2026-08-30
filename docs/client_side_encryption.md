@@ -43,6 +43,33 @@ Medusa delegates the encryption frame and metadata format entirely to the `aws-e
 The SDK automatically adds necessary headers, message IDs, and authentication tags to ensure strong security and integrity of the encrypted stream.
 The underlying cryptographic material manager wraps a user-provided raw AES 256-bit key.
 
+## What is *not* encrypted
+
+Only SSTable files are encrypted. Backup metadata is deliberately left in plaintext, so that a
+backup stays inspectable and its index usable without the key. Anyone with read access to the
+bucket can therefore read, without the key:
+
+| What | Reveals |
+|---|---|
+| Object keys | Keyspace names, table names and UUIDs, secondary index names, node fqdn, backup names and timestamps |
+| `schema.cql` | The **complete schema**: every table, every column, their types, and CQL comments |
+| `tokenmap.json` | Node addresses, tokens, datacenters and racks |
+| `server_version.json` | The exact Cassandra version |
+| `manifest.json` | File layout, and the encrypted size and hash of every object |
+| `manifest.json`, differential backups only | `source_size` and `source_MD5`: the **exact size and MD5 of each file before encryption** |
+
+Two consequences worth weighing before enabling CSE to satisfy a compliance requirement:
+
+- **Column names are often the most descriptive thing about a dataset.** The contents of a
+  `card_number` column are encrypted; the fact that the column exists is not.
+- On differential backups, `source_MD5` lets someone with bucket access confirm a *guessed*
+  plaintext without the key. It is inert for a large high-entropy `Data.db`, and much less so for a
+  small structured component. It is written only where it is needed - differential backups - and
+  never for full backups.
+
+If the metadata itself is sensitive, client-side encryption is not sufficient on its own: pair it
+with restricted bucket access and server-side encryption.
+
 ## Configuration
 
 ### Encryption Key Generation
@@ -173,14 +200,8 @@ Verification checks both encrypted file integrity and manifest consistency.
 - Index files (secondary indexes in `.index_name/` directories),
 - All user data files.
 
-**Not Encrypted** (stored as plaintext):
-- `manifest*.json`
-- `schema.cql`
-- `tokenmap.json`
-- `server_version.json`
-- `backup_name.txt`
-
-These metadata files must be accessible without decryption for backup discovery and validation.
+Everything else - the backup metadata - is stored in plaintext, and what that discloses is worth
+knowing before you rely on CSE: see [What is *not* encrypted](#what-is-not-encrypted) above.
 
 ## Performance Considerations
 

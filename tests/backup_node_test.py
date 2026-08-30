@@ -189,17 +189,30 @@ class MakeManifestObjectTest(unittest.TestCase):
         storage.prefix_path = ''
         return storage
 
-    def _manifest(self, key_secret_base64, manifest_object):
+    def _manifest(self, key_secret_base64, manifest_object, is_differential=True):
         snapshot_path = MagicMock()
         snapshot_path.keyspace = 'medusa'
         snapshot_path.columnfamily = 'test'
         return backup_node.make_manifest_object(
-            'node1', snapshot_path, [manifest_object], self._storage(key_secret_base64)
+            'node1', snapshot_path, [manifest_object], self._storage(key_secret_base64),
+            is_differential=is_differential
         )
 
     def test_plaintext_backup_manifest_keeps_the_original_shape(self):
         entry = self._manifest(
             None, ManifestObject('node1/data/medusa/test/f.db', 100, 'md5')
+        )['objects'][0]
+
+        self.assertEqual(sorted(entry.keys()), ['MD5', 'path', 'size'])
+
+    def test_full_encrypted_backup_does_not_publish_the_plaintext_hash(self):
+        """
+        source_MD5 is a hash of the plaintext stored in the clear next to the ciphertext. Only
+        differential backups read it back, so a full backup must not write it.
+        """
+        entry = self._manifest(
+            'a-key', ManifestObject('node1/data/medusa/test/f.db', 120, 'enc-md5', 100, 'src-md5'),
+            is_differential=False
         )['objects'][0]
 
         self.assertEqual(sorted(entry.keys()), ['MD5', 'path', 'size'])

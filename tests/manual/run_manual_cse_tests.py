@@ -390,6 +390,21 @@ def run_configuration(name):
     log(f'Configuration {name}: PASS', level='===')
 
 
+def assert_no_cassandra_running():
+    """
+    A Cassandra already listening on the storage port means another suite is using CCM. Say so,
+    rather than letting ccm fail three frames deep with "Address already in use".
+    """
+    import socket
+    with socket.socket() as probe:
+        probe.settimeout(1)
+        if probe.connect_ex(('127.0.0.1', 7000)) == 0:
+            raise Failure(
+                'something is already listening on 127.0.0.1:7000 - another Cassandra or another '
+                'test suite is running. Stop it (ccm stop) before running this protocol.'
+            )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('configurations', nargs='*', default=None,
@@ -401,6 +416,12 @@ def main():
     if unknown:
         parser.error(f'unknown configuration(s): {", ".join(unknown)}; '
                      f'known: {", ".join(CONFIGURATIONS)}')
+
+    try:
+        assert_no_cassandra_running()
+    except Failure as failure:
+        log(str(failure), level='!!!')
+        return 1
 
     WORK.mkdir(parents=True, exist_ok=True)
     (WORK / 'tmp').mkdir(exist_ok=True)

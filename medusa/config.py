@@ -94,6 +94,8 @@ CONFIG_SECTIONS = {
     'kubernetes': KubernetesConfig
 }
 
+MEDUSA_ENV_VAR_PREFIX = 'MEDUSA_'
+
 DEFAULT_CONFIGURATION_PATH = pathlib.Path('/etc/medusa/medusa.ini')
 DEFAULT_GRPC_PORT = 50051
 
@@ -252,11 +254,16 @@ def _handle_k8s_and_grpc_settings(config, args):
             config['storage']['fqdn'] = os.environ["POD_IP"]
 
 
+def _env_var_name(config_property):
+    """Name of the environment variable overriding a given configuration property."""
+    return MEDUSA_ENV_VAR_PREFIX + config_property.upper()
+
+
 def _handle_env_vars(config):
     """Handle environment variable overrides."""
     for config_property in ['cql_username', 'cql_password']:
         config_property_upper_old = config_property.upper()
-        config_property_upper_new = "MEDUSA_{}".format(config_property.upper())
+        config_property_upper_new = _env_var_name(config_property)
         if config_property_upper_old in os.environ:
             config['cassandra'][config_property] = os.environ[config_property_upper_old]
             logging.warning('The {} environment variable is deprecated and has been replaced by the {} variable'
@@ -273,7 +280,7 @@ def _handle_env_vars(config):
         'cql_k8s_secrets_path',
         'nodetool_k8s_secrets_path'
     ]:
-        config_property_upper = "MEDUSA_{}".format(config_property.upper())
+        config_property_upper = _env_var_name(config_property)
         if config_property_upper in os.environ:
             config.set('cassandra', config_property, os.environ[config_property_upper])
 
@@ -282,7 +289,7 @@ def _handle_env_vars(config):
     # widely than the key deserves. Every other Medusa secret already has an indirection
     # (key_file for the storage credentials); these give the encryption key one too.
     for config_property in ['key_secret_base64', 'key_secret_file']:
-        config_property_upper = "MEDUSA_{}".format(config_property.upper())
+        config_property_upper = _env_var_name(config_property)
         if config_property_upper in os.environ:
             config.set('storage', config_property, os.environ[config_property_upper])
 

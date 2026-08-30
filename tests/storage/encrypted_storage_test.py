@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import threading
 import unittest
 import os
 import tempfile
@@ -484,6 +486,60 @@ class PlaintextObjectPredicateTest(unittest.TestCase):
 
         self.assertTrue(is_plaintext_object(full_path), "a full path matches - this is the trap")
         self.assertFalse(is_plaintext_object(pathlib.Path(full_path).name))
+
+
+@unittest.skipIf(not HAS_AWS_CRYPT, "aws-encryption-sdk is not installed")
+class EncryptedUploadOffloadTest(unittest.TestCase):
+    """
+    Draining an EncryptedStream encrypts the whole file. Done inline in the coroutine it blocks the
+    event loop, so the transfers _upload_encrypted_blobs() gathers run one after another instead of
+    concurrently. It has to happen in a thread.
+    """
+
+    def test_spooling_runs_off_the_event_loop(self):
+        spool_threads = []
+        loop_thread = threading.current_thread().ident
+
+        config_dict = {
+            'storage_provider': 'mock',
+            'bucket_name': 'test_bucket',
+            'concurrent_transfers': '4',
+            'key_secret_base64': base64.b64encode(os.urandom(32)).decode('utf-8'),
+            'encryption_tmp_dir': None,
+            'encryption_frame_length': 8388608,
+        }
+        config = MagicMock()
+        for k, v in config_dict.items():
+            setattr(config, k, v)
+
+        class RecordingStorage(MockStorage):
+            # use the default spooling implementation, not MockStorage's stream override
+            _upload_object_from_stream = AbstractStorage._upload_object_from_stream
+
+            def _spool_stream_to_temp_file(self, stream):
+                spool_threads.append(threading.current_thread().ident)
+                return super()._spool_stream_to_temp_file(stream)
+
+        storage = RecordingStorage(config)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            srcs = []
+            for i in range(3):
+                path = os.path.join(tmp_dir, f'file{i}.db')
+                with open(path, 'wb') as f:
+                    f.write(os.urandom(64 * 1024))
+                srcs.append(path)
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(storage._upload_encrypted_blobs(srcs, 'dest'))
+            finally:
+                loop.close()
+
+        self.assertEqual(len(spool_threads), 3)
+        for thread_id in spool_threads:
+            self.assertNotEqual(thread_id, loop_thread,
+                                "encryption must not run on the thread driving the event loop")
 
 
 if __name__ == '__main__':

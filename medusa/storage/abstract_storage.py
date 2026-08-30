@@ -410,6 +410,28 @@ class AbstractStorage(abc.ABC):
 
         return manifest_object
 
+    def _spool_stream_to_temp_file(self, stream: t.BinaryIO):
+        """
+        Drain an encrypted stream into a temporary file, and return it positioned at the start.
+
+        Meant to run in a thread pool, not in a coroutine: draining the stream encrypts the whole
+        file. Spooling to disk rather than to memory is what keeps a large SSTable from being held
+        in RAM in full.
+        """
+        from medusa.storage.encryption import STREAM_COPY_BLOCK_SIZE
+
+        tmp = tempfile.NamedTemporaryFile(dir=self.encryption_tmp_dir, prefix='medusa-cse-',
+                                          delete=True)
+        try:
+            shutil.copyfileobj(stream, tmp, length=STREAM_COPY_BLOCK_SIZE)
+            tmp.flush()
+            tmp.seek(0)
+            return tmp
+        except Exception:
+            # the caller never receives the handle, so it cannot close it for us
+            tmp.close()
+            raise
+
     async def _upload_object_from_stream(
             self, stream: t.BinaryIO, object_key: str,
             headers: t.Dict[str, str]) -> ManifestObject:
@@ -418,17 +440,17 @@ class AbstractStorage(abc.ABC):
         Child classes should override this to support streaming uploads (e.g. boto3 upload_fileobj).
         Default implementation spools the stream to a temporary file on disk to avoid OOM on large files.
         """
-        from medusa.storage.encryption import STREAM_COPY_BLOCK_SIZE
-
         logging.debug(f"Using default file-spooling fallback for upload of {object_key}")
 
-        with tempfile.NamedTemporaryFile(dir=self.encryption_tmp_dir, prefix='medusa-cse-',
-                                         delete=True) as tmp:
-            # Write stream to temporary file to avoid loading entire file in memory
-            shutil.copyfileobj(stream, tmp, length=STREAM_COPY_BLOCK_SIZE)
-            tmp.flush()
-            tmp.seek(0)
+        # Draining the stream is where the encryption actually happens. Doing it inline in this
+        # coroutine blocked the event loop, so the transfers _upload_encrypted_blobs() gathers ran
+        # one after another instead of concurrently. Hand it to a thread, like every other transfer
+        # path in this class does.
+        loop = self.get_or_create_event_loop()
+        executor = getattr(self, 'executor', None)
+        tmp = await loop.run_in_executor(executor, self._spool_stream_to_temp_file, stream)
 
+        with tmp:
             # Now upload from the temp file using the standard upload mechanism
             blob = await self._upload_object(tmp, object_key, headers)
 

@@ -14,6 +14,7 @@
 # limitations under the License.
 import os
 import pathlib
+import tempfile
 import unittest
 from concurrent.futures.thread import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
@@ -22,7 +23,7 @@ from medusa import backup_node, config
 from medusa.backup_node import BackupMan, check_already_uploaded
 from medusa.config import MedusaConfig, StorageConfig, CassandraConfig, \
     SSHConfig, ChecksConfig, MonitoringConfig, LoggingConfig, GrpcConfig, KubernetesConfig
-from medusa.storage.abstract_storage import ManifestObject
+from medusa.storage.abstract_storage import AbstractStorage, ManifestObject
 
 
 class BackupNodeTest(unittest.TestCase):
@@ -228,6 +229,140 @@ class MakeManifestObjectTest(unittest.TestCase):
         self.assertEqual(entry['MD5'], 'enc-md5')
         self.assertEqual(entry['source_size'], 100)
         self.assertEqual(entry['source_MD5'], 'src-md5')
+
+
+class CheckAlreadyUploadedEncryptedTest(unittest.TestCase):
+    """
+    The differential-reuse decision under client-side encryption.
+
+    Without the key Medusa cannot compare a local file against the encrypted object in storage, so
+    it compares against the plaintext metadata the manifest carries instead - source_size and
+    source_MD5. Getting this wrong does not fail anything visibly: it produces a differential backup
+    that believes it holds a file it does not, and that only surfaces at restore time.
+    """
+
+    KEYSPACE = 'keyspace1'
+    TABLE = 'table1-cfid'
+    FILENAME = 'nb-1-big-Data.db'
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        # check_already_uploaded() stats and hashes the local file, so it has to exist on disk, and
+        # sanitize_keyspace_and_table_name() needs the real .../data/<ks>/<table>/snapshots/ shape
+        snapshot_dir = pathlib.Path(
+            self.tmp_dir.name, 'data', self.KEYSPACE, self.TABLE, 'snapshots', 'snapshot-name'
+        )
+        snapshot_dir.mkdir(parents=True)
+        self.src = snapshot_dir / self.FILENAME
+        self.src.write_bytes(b'sstable contents' * 64)
+
+        self.local_size = self.src.stat().st_size
+        self.local_md5 = AbstractStorage.generate_md5_hash(self.src)
+
+        self.node_backup = MagicMock()
+        self.node_backup.is_differential = True
+
+        self.storage = MagicMock()
+        self.storage.config.key_secret_base64 = 'a-key'
+        # if the encrypted branch ever falls through to this, the test should notice
+        self.storage.storage_driver.file_matches_storage.side_effect = AssertionError(
+            'the encrypted branch must not consult the storage driver'
+        )
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def _check(self, item_in_storage, enable_md5_checks=True):
+        return check_already_uploaded(
+            self.storage,
+            self.node_backup,
+            multipart_threshold=100,
+            enable_md5_checks=enable_md5_checks,
+            files_in_storage={self.KEYSPACE: {self.TABLE: {self.FILENAME: item_in_storage}}},
+            keyspace=self.KEYSPACE,
+            srcs=[self.src],
+        )
+
+    def _stored(self, source_size=None, source_md5=None):
+        """The manifest entry as a differential backup would have written it."""
+        return ManifestObject(
+            self.FILENAME, 9999, 'encrypted-md5',
+            self.local_size if source_size is None else source_size,
+            self.local_md5 if source_md5 is None else source_md5,
+        )
+
+    def test_matching_size_and_md5_is_reused(self):
+        needs_backup, needs_reupload, already = self._check(self._stored())
+
+        self.assertEqual(needs_backup, [])
+        self.assertEqual(needs_reupload, [])
+        self.assertEqual(len(already), 1)
+        # what gets recorded is the entry from storage, not the local path
+        self.assertEqual(already[0].source_MD5, self.local_md5)
+
+    def test_different_plaintext_size_forces_a_reupload(self):
+        needs_backup, needs_reupload, already = self._check(
+            self._stored(source_size=self.local_size + 1)
+        )
+
+        self.assertEqual(needs_reupload, [self.src])
+        self.assertEqual(already, [])
+
+    def test_different_plaintext_md5_forces_a_reupload(self):
+        needs_backup, needs_reupload, already = self._check(
+            self._stored(source_md5='some-other-hash')
+        )
+
+        self.assertEqual(needs_reupload, [self.src])
+        self.assertEqual(already, [])
+
+    def test_md5_is_not_consulted_when_checks_are_disabled(self):
+        """
+        With enable_md5_checks off, reuse rests on the size alone - so a file whose content changed
+        without changing length is reused. That matches the unencrypted path, and is worth pinning
+        because it is the default and it is not obvious.
+        """
+        needs_backup, needs_reupload, already = self._check(
+            self._stored(source_md5='deliberately-wrong'), enable_md5_checks=False
+        )
+
+        self.assertEqual(needs_reupload, [])
+        self.assertEqual(len(already), 1)
+
+    def test_a_file_backed_up_before_encryption_is_never_reused(self):
+        """
+        An entry without source_MD5 was written by an unencrypted backup. Restoring expects
+        ciphertext, so such a file has to be uploaded again rather than reused - this is what keeps
+        encrypted and unencrypted files out of the same differential chain.
+        """
+        needs_backup, needs_reupload, already = self._check(
+            ManifestObject(self.FILENAME, self.local_size, self.local_md5)
+        )
+
+        self.assertEqual(needs_reupload, [self.src])
+        self.assertEqual(already, [])
+
+    def test_without_a_key_the_unencrypted_path_still_applies(self):
+        """Non-regression: with encryption off, the decision goes back to the storage driver."""
+        self.storage.config.key_secret_base64 = None
+        self.storage.storage_driver.file_matches_storage.side_effect = None
+        self.storage.storage_driver.file_matches_storage.return_value = True
+
+        needs_backup, needs_reupload, already = self._check(
+            ManifestObject(self.FILENAME, self.local_size, self.local_md5)
+        )
+
+        self.assertEqual(needs_reupload, [])
+        self.assertEqual(len(already), 1)
+        self.storage.storage_driver.file_matches_storage.assert_called_once()
+
+    def test_a_full_backup_uploads_everything_regardless(self):
+        self.node_backup.is_differential = False
+
+        needs_backup, needs_reupload, already = self._check(self._stored())
+
+        self.assertEqual(needs_backup, [self.src])
+        self.assertEqual(already, [])
 
 
 if __name__ == '__main__':

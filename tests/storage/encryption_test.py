@@ -29,7 +29,7 @@ class EncryptionManagerTest(unittest.TestCase):
         self.manager = EncryptionManager(self.key_b64)
 
     def test_init_invalid_key(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValueError):
             EncryptionManager("invalid_base64_key")
 
         with self.assertRaises(ValueError):

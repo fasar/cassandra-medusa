@@ -23,6 +23,9 @@ import tempfile
 
 from medusa.storage.encryption import EncryptionManager, EncryptedStream, DecryptedStream, HAS_AWS_CRYPT
 
+if HAS_AWS_CRYPT:
+    from aws_encryption_sdk.exceptions import SerializationError
+
 
 @unittest.skipIf(not HAS_AWS_CRYPT, "aws-encryption-sdk is not installed")
 class EncryptedStreamTest(unittest.TestCase):
@@ -193,13 +196,9 @@ class DecryptedStreamTest(unittest.TestCase):
             dec_stream.read()
 
     def test_empty_stream(self):
-        # Empty stream passed to DecryptedStream is invalid for AWS Crypto (must have header)
-        # So it should raise an exception or handle gracefully depending on SDK behavior
-        # The SDK expects a header.
-
-        # If we pass truly empty bytes, SDK might raise NotSupportedError or similar "Header too small"
+        # An AWS Encryption SDK message starts with a header; empty input cannot be one.
         dec_stream = DecryptedStream(io.BytesIO(b""), self.key)
-        with self.assertRaises(Exception):
+        with self.assertRaises(SerializationError):
             dec_stream.read()
 
 

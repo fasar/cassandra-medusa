@@ -44,7 +44,7 @@ MAX_UP_DOWN_LOAD_RETRIES = 5
 # differential/incremental markers, backup_name.txt) is always stored as plaintext, so that a
 # backup stays inspectable and its index usable without the encryption key.
 PLAINTEXT_FILES_REGEX = re.compile(
-    '.*(tokenmap|schema|manifest|differential|incremental|server_version|backup_name|restore_verify_query)(.*)$'
+    'tokenmap|schema|manifest|differential|incremental|server_version|backup_name|restore_verify_query'
 )
 
 
@@ -61,7 +61,7 @@ def is_plaintext_object(name: str) -> bool:
     Matching is on the base name only: SSTable components (Data.db, Index.db, Digest.crc32, ...)
     never carry any of these words, so a user table named e.g. "schema_history" is unaffected.
     """
-    return bool(PLAINTEXT_FILES_REGEX.match(name))
+    return bool(PLAINTEXT_FILES_REGEX.search(name))
 
 
 AbstractBlob = collections.namedtuple('AbstractBlob', ['name', 'size', 'hash', 'last_modified', 'storage_class'])
@@ -321,7 +321,9 @@ class AbstractStorage(abc.ABC):
             with open(dest_path, 'wb') as f_out:
                 shutil.copyfileobj(dec_stream, f_out, length=STREAM_COPY_BLOCK_SIZE)
         except Exception as e:
-            logging.error(f"Error streaming download/decrypt: {e}")
+            # exception() rather than error(): this is where an InvalidTag lands, meaning a
+            # tampered or corrupted object, and the traceback is what makes it diagnosable
+            logging.exception(f"Error streaming download/decrypt of {dest_path}: {e}")
             if dest_path.exists():
                 try:
                     os.remove(dest_path)

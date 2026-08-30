@@ -44,10 +44,14 @@ DEFAULT_FRAME_LENGTH = 8 * 1024 * 1024
 class HashingStreamWrapper(io.RawIOBase):
     """
     Wraps a stream to calculate MD5 and size of data read from it.
+
+    The MD5 is a checksum, not a security primitive: it goes into the manifest and is compared
+    against the object hash the storage backend reports (an S3 ETag, for instance). Hence
+    usedforsecurity=False, which also keeps security scanners from flagging it.
     """
     def __init__(self, stream):
         self.stream = stream
-        self.hash = hashlib.md5()
+        self.hash = hashlib.md5(usedforsecurity=False)
         self.size = 0
 
     def read(self, size=-1):
@@ -195,7 +199,7 @@ class EncryptionManager:
         return frame_length
 
     def encrypt_file(self, src_path, dst_path):
-        encrypted_hash = hashlib.md5()
+        encrypted_hash = hashlib.md5(usedforsecurity=False)
         encrypted_size = 0
 
         with open(src_path, 'rb') as f_in, open(dst_path, 'wb') as f_out:
@@ -259,7 +263,7 @@ class EncryptionStreamBase(io.RawIOBase):
         self.manager = manager if manager is not None else EncryptionManager(key_secret_base64, frame_length)
         self.source_stream = source_stream
 
-        self.output_hash = hashlib.md5()
+        self.output_hash = hashlib.md5(usedforsecurity=False)
         self.output_size = 0
 
         # Data pulled from the SDK stream but not yet handed to the caller. We track how much of

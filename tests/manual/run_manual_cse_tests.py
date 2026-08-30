@@ -82,8 +82,25 @@ def run(cmd, check=True, cwd=REPO, quiet=False):
     return result
 
 
+def venv_bin(name):
+    """
+    Path to a console script inside the poetry venv.
+
+    `poetry run medusa` does not work with this project: [tool.poetry.scripts] declares its entry
+    points with the legacy `reference`/`type` keys, and Poetry 2.x resolves declared scripts itself
+    expecting `callable`, so it dies with KeyError('callable') printed as just 'callable'. The
+    installed console script itself is fine, so call it directly. Calling it directly is also a
+    second faster per invocation, and this protocol makes a lot of invocations.
+    """
+    if not hasattr(venv_bin, 'root'):
+        venv_bin.root = pathlib.Path(
+            run(['poetry', 'env', 'info', '--path'], quiet=True).stdout.strip()
+        ) / 'bin'
+    return venv_bin.root / name
+
+
 def medusa(config_file, *args, check=True):
-    return run(['poetry', 'run', 'medusa', '--config-file', config_file, *args], check=check)
+    return run([venv_bin('medusa'), '--config-file', config_file, *args], check=check)
 
 
 # --------------------------------------------------------------------------- CCM
@@ -91,14 +108,14 @@ def medusa(config_file, *args, check=True):
 
 def ccm(*args, check=True, cluster=None):
     if cluster:
-        run(['poetry', 'run', 'ccm', 'switch', cluster], quiet=True)
-    return run(['poetry', 'run', 'ccm', *args], check=check)
+        run([venv_bin('ccm'), 'switch', cluster], quiet=True)
+    return run([venv_bin('ccm'), *args], check=check)
 
 
 def recreate_cluster(name):
     step(f'Recreating CCM cluster {name}')
-    run(['poetry', 'run', 'ccm', 'remove', name], check=False, quiet=True)
-    run(['poetry', 'run', 'ccm', 'create', name, '-v', f'binary:{CASSANDRA_VERSION}', '-n', '1'])
+    run([venv_bin('ccm'), 'remove', name], check=False, quiet=True)
+    run([venv_bin('ccm'), 'create', name, '-v', f'binary:{CASSANDRA_VERSION}', '-n', '1'])
     conf = pathlib.Path.home() / '.ccm' / name / 'node1' / 'conf'
     env_sh = conf / 'cassandra-env.sh'
     text = env_sh.read_text()
@@ -115,8 +132,8 @@ def recreate_cluster(name):
 
 
 def stop_cluster(name):
-    run(['poetry', 'run', 'ccm', 'switch', name], check=False, quiet=True)
-    run(['poetry', 'run', 'ccm', 'stop'], check=False, quiet=True)
+    run([venv_bin('ccm'), 'switch', name], check=False, quiet=True)
+    run([venv_bin('ccm'), 'stop'], check=False, quiet=True)
 
 
 # --------------------------------------------------------------------------- CQL
@@ -133,6 +150,11 @@ def session():
             last = e
             time.sleep(2)
     raise Failure(f'could not connect to Cassandra: {last}')
+
+
+def close(sess):
+    """Shut the cluster down, not just the session: leaving it up prints a scheduler traceback at exit."""
+    sess.cluster.shutdown()
 
 
 def create_schema(sess):
@@ -157,7 +179,16 @@ def seed_up_to(sess, counts):
         current = count_rows(sess, ks)
         for i in range(current, target):
             sess.execute(f"INSERT INTO {ks}.{table} (id, value) VALUES ({i}, 'row-{i}')")
-    ccm('node1', 'nodetool', '--', '-Dcom.sun.jndi.rmiURLParsing=legacy', 'flush')
+    flush()
+
+
+def flush():
+    """
+    ccm's own option parser eats a leading -D even after --, so the rmiURLParsing flag cannot be
+    passed here. It is not needed for a plain flush; medusa gets it from nodetool_flags in the
+    config for its own nodetool calls.
+    """
+    ccm('node1', 'nodetool', 'flush')
 
 
 def count_rows(sess, ks):
@@ -270,7 +301,9 @@ def storage_checks(config_file, encrypted, backup_name):
 
     config = medusa.config.load_config({}, pathlib.Path(config_file))
     with Storage(config=config.storage) as storage:
-        blobs = storage.storage_driver.list_blobs(prefix=None)
+        # prefix=None means "everything" for the local and GCS drivers, but S3 and Azure format it
+        # as the literal string "None" and silently return nothing. Always pass a real prefix.
+        blobs = storage.storage_driver.list_blobs(prefix=storage._prefix)
         names = [b.name for b in blobs]
 
         # A7 - an SSTable must be ciphertext exactly when encryption is on
@@ -357,14 +390,14 @@ def run_configuration(name):
 
     # ---- R1: whole-node restore of the full backup
     step('R1: in-place restore of B1 (whole node)')
-    sess.shutdown()
+    close(sess)
     medusa(src_config, 'restore-node', '--backup-name', 'B1', '--temp-dir', str(WORK / 'tmp'))
     sess = session()
     assert_counts(sess, STATES['B1'], 'R1 after restoring B1')
 
     # ---- R2: single keyspace out of two
     step('R2: in-place restore of B3, ks_alpha only')
-    sess.shutdown()
+    close(sess)
     medusa(src_config, 'restore-node', '--backup-name', 'B3', '--temp-dir', str(WORK / 'tmp'),
            '--keyspace', 'ks_alpha')
     sess = session()
@@ -373,7 +406,7 @@ def run_configuration(name):
 
     # ---- R3: another cluster, through sstableloader
     step('R3: restore B2 onto a second cluster with sstableloader')
-    sess.shutdown()
+    close(sess)
     stop_cluster(SRC_CLUSTER)
     recreate_cluster(DST_CLUSTER)
     dst_config = write_config(f'{name}-dst', provider, encrypted, DST_CLUSTER, f'{name}-prefix')
@@ -382,9 +415,9 @@ def run_configuration(name):
     assert_counts(sess, {'ks_alpha': 0, 'ks_beta': 0}, 'R3 target cluster starts empty')
     medusa(dst_config, 'restore-node', '--backup-name', 'B2', '--temp-dir', str(WORK / 'tmp'),
            '--use-sstableloader')
-    ccm('node1', 'nodetool', '--', '-Dcom.sun.jndi.rmiURLParsing=legacy', 'flush')
+    flush()
     assert_counts(sess, STATES['B2'], 'R3 after sstableloader restore of B2')
-    sess.shutdown()
+    close(sess)
     stop_cluster(DST_CLUSTER)
 
     log(f'Configuration {name}: PASS', level='===')

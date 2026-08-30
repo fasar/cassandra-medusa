@@ -77,6 +77,11 @@ from medusa.utils import MedusaTempFile
 
 TRUNK_VERSION = 'github:apache/trunk'
 
+# Configurations backed by the local storage provider. local_cse is the same backend with
+# client-side encryption on, which is how the default spooling code path - the one S3 and
+# s3_compatible override - gets exercised without needing any cloud credentials.
+LOCAL_STORAGE_CONFIGS = ('local', 'local_cse')
+
 storage_prefix = "{}-{}".format(datetime.datetime.now().isoformat(), str(uuid.uuid4()))
 os.chdir("..")
 certfile = "{}/resources/local_with_ssl/rootCa.crt".format(os.getcwd())
@@ -125,7 +130,7 @@ def cleanup_monitoring(context):
 
 
 def cleanup_storage(context, storage_provider):
-    if storage_provider == "local":
+    if storage_provider in LOCAL_STORAGE_CONFIGS:
         if os.path.isdir(os.path.join("/tmp", "medusa_it_bucket")):
             shutil.rmtree(os.path.join("/tmp", "medusa_it_bucket"))
         os.makedirs(os.path.join("/tmp", "medusa_it_bucket"))
@@ -723,7 +728,7 @@ def parse_medusa_config(
 
 
 def create_storage_specific_resources(storage_provider, config=None):
-    if storage_provider == "local":
+    if storage_provider in LOCAL_STORAGE_CONFIGS:
         if os.path.isdir(os.path.join("/tmp", "medusa_it_bucket")):
             shutil.rmtree(os.path.join("/tmp", "medusa_it_bucket"))
         os.makedirs(os.path.join("/tmp", "medusa_it_bucket"))
@@ -1687,8 +1692,9 @@ def _i_can_fecth_tokenmap_of_backup_named(context, backup_name):
 @then(r'the schema of the backup named "{backup_name}" was uploaded with KMS key according to "{storage_provider}"')
 def _the_schema_was_uploaded_with_kms_key_according_to_storage(context, backup_name, storage_provider):
 
-    # testing server-side encryption is not irrelevant when running with local storage
-    if storage_provider == 'local':
+    # server-side encryption is a cloud storage concept: there is nothing to assert on the local
+    # backend, with or without client-side encryption
+    if storage_provider in LOCAL_STORAGE_CONFIGS:
         return
 
     # we're testing the schema blob, because that one is written from a string
@@ -1731,7 +1737,7 @@ def _all_files_of_table_in_backup_were_uploaded_with_key_configured_in_storage_c
         context, fqtn, backup_name, storage_provider
 ):
     # testing server-side encryption is not irrelevant when running with local storage
-    if storage_provider == 'local':
+    if storage_provider in LOCAL_STORAGE_CONFIGS:
         return
 
     # in this step we're testing the code path that uploads actual files (not just stuff written directly)

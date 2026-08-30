@@ -51,6 +51,7 @@ Feature: Integration tests
         Examples: Local storage
         | storage           | client encryption |
         | local      | with_client_encryption |
+        | local_cse  | with_client_encryption |
 
         @s3
         Examples: S3 storage
@@ -342,6 +343,7 @@ Feature: Integration tests
         Examples: Local storage
         | storage           | client encryption |
         | local      |  with_client_encryption |
+        | local_cse  |  with_client_encryption |
 
         @s3
         Examples: S3 storage

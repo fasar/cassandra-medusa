@@ -255,21 +255,40 @@ class StreamBufferingTest(unittest.TestCase):
 
         self.assertEqual(b"".join(chunks), self.content)
 
-    def test_buffer_stays_bounded_when_reading_in_small_blocks(self):
+    def test_the_buffer_is_consumed_in_place_not_rebuilt(self):
         """
-        Guards against the buffer growing with the amount of data already consumed, which is what
-        made read() quadratic: the consumed prefix has to be reclaimed as we go.
+        This is the guard against the quadratic read().
+
+        What made it quadratic was not the buffer's *size*: the old code kept at most one frame too,
+        because `self.buffer = self.buffer[size:]` shrinks it. It was rebuilding the buffer on every
+        single read - that slice allocates a new bytes and copies everything still pending, so
+        draining one 8 MiB frame in 8 KiB reads copied about 4 GiB, 512 times the useful volume.
+
+        The property that actually separates the two implementations is therefore that the buffer
+        object is consumed in place: a bytearray advanced through an offset keeps its identity,
+        while re-slicing hands back a new object on every read. References to the buffers seen are
+        kept so that CPython cannot reuse a freed address and hide a regression.
         """
+        read_size = 512
         stream = EncryptedStream(io.BytesIO(self.content), self.key, self.FRAME_LENGTH)
+
+        seen = []
         max_buffer = 0
         while True:
-            chunk = stream.read(512)
+            chunk = stream.read(read_size)
             if not chunk:
                 break
+            if not seen or seen[-1] is not stream.buffer:
+                seen.append(stream.buffer)
             max_buffer = max(max_buffer, len(stream.buffer))
 
-        # One frame in flight plus the tail of the previous one is the most we should ever hold
-        self.assertLessEqual(max_buffer, 2 * self.FRAME_LENGTH + 512)
+        self.assertEqual(len(seen), 1,
+                         f'the buffer was reallocated {len(seen)} times instead of being consumed '
+                         f'in place - read() is copying on every call again')
+
+        # and it still never holds more than one frame: the fill loop stops as soon as the request
+        # can be served, and the buffer is empty by the time the next frame is pulled
+        self.assertLessEqual(max_buffer, self.FRAME_LENGTH)
 
     def test_read_zero_returns_empty_without_consuming(self):
         stream = EncryptedStream(io.BytesIO(self.content), self.key, self.FRAME_LENGTH)

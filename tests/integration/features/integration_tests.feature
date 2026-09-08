@@ -54,30 +54,34 @@ Feature: Integration tests
 
         @s3
         Examples: S3 storage
-        | storage           | client encryption |
-        | s3_us_west_oregon     | without_client_encryption |
-        | s3_us_west_oregon_encrypted     | without_client_encryption |
+        | storage                           | client encryption |
+        | s3_us_west_oregon                 | without_client_encryption |
+        | s3_us_west_oregon_encrypted       | without_client_encryption |
         | s3_us_west_oregon_encrypted_sse_c | without_client_encryption |
+        | s3_us_west_oregon_cse             | without_client_encryption |
+
 
         @gcs
         Examples: Google Cloud Storage
-        | storage           | client encryption |
+        | storage             | client encryption |
         | google_storage      | without_client_encryption |
 
         @azure
         Examples: Azure Blob Storage
-        | storage           | client encryption |
+        | storage          | client encryption |
         | azure_blobs      | without_client_encryption |
         
         @ibm
         Examples: IBM Cloud Object Storage
         | storage           | client encryption |
         | ibm_storage      | without_client_encryption |
+        | ibm_storage_cse  | without_client_encryption |
 
         @minio
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @2
     Scenario Outline: Perform a backup and verify its index
@@ -126,6 +130,7 @@ Feature: Integration tests
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @3
     Scenario Outline: Perform a backup and verify the latest backup is updated correctly
@@ -170,6 +175,7 @@ Feature: Integration tests
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @4
     Scenario Outline: Perform a fake backup (by just writing an index) on different days and verify reports are correct
@@ -337,8 +343,9 @@ Feature: Integration tests
 
         @s3
         Examples: S3 storage
-        | storage           | client encryption |
+        | storage               | client encryption |
         | s3_us_west_oregon     |  without_client_encryption |
+        | s3_us_west_oregon_cse |  without_client_encryption |
 
         @gcs
         Examples: Google Cloud Storage
@@ -354,11 +361,13 @@ Feature: Integration tests
         Examples: IBM Cloud Object Storage
         | storage           | client encryption |
         | ibm_storage      | without_client_encryption |
+        | ibm_storage_cse  | without_client_encryption |
 
         @minio
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @9
     Scenario Outline: Run a purge on backups
@@ -425,6 +434,7 @@ Feature: Integration tests
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @10
     Scenario Outline: Run a backup and restore and verify metrics
@@ -467,6 +477,7 @@ Feature: Integration tests
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @11
     Scenario Outline: Perform a backup, and restore it using the sstableloader
@@ -496,6 +507,7 @@ Feature: Integration tests
         Examples: S3 storage
         | storage           | client encryption |
         | s3_us_west_oregon     |  without_client_encryption |
+        | s3_us_west_oregon_cse |  without_client_encryption |
 
         @gcs
         Examples: Google Cloud Storage
@@ -511,11 +523,13 @@ Feature: Integration tests
         Examples: IBM Cloud Object Storage
         | storage           | client encryption |
         | ibm_storage      | without_client_encryption |
+        | ibm_storage_cse  | without_client_encryption |
 
         @minio
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @12
     Scenario Outline: Backup two tables but restore only one
@@ -567,6 +581,7 @@ Feature: Integration tests
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @13
     Scenario Outline: Perform a backup and a restore, then verify the restore
@@ -609,6 +624,7 @@ Feature: Integration tests
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @14
     Scenario Outline: Perform a backup & restore of a table with secondary index
@@ -653,6 +669,7 @@ Feature: Integration tests
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @15
     Scenario Outline: Do a full backup, then a differential one
@@ -695,6 +712,7 @@ Feature: Integration tests
         Examples: MinIO storage
         | storage           | client encryption         |
         | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
     @16
     Scenario Outline: Perform a differential backup over gRPC , verify its index, then delete it over gRPC with Jolokia
@@ -915,8 +933,9 @@ Feature: Integration tests
 
         @minio
         Examples: MinIO storage
-        | storage | client encryption         |
-        | minio   | without_client_encryption |
+        | storage           | client encryption         |
+        | minio             | without_client_encryption |
+        | minio_cse         | without_client_encryption |
 
 
     @23
@@ -1024,8 +1043,9 @@ Feature: Integration tests
 
     @minio
     Examples: MinIO storage
-    | storage | client encryption         |
-    | minio   | without_client_encryption |
+    | storage           | client encryption         |
+    | minio             | without_client_encryption |
+    | minio_cse         | without_client_encryption |
 
     # skipping s3 because we don't have good enough parallelization yet and this scenario takes too long
 

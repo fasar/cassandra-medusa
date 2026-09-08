@@ -32,6 +32,7 @@ from ssl import SSLContext, PROTOCOL_TLS, PROTOCOL_TLSv1_2, CERT_REQUIRED
 from subprocess import PIPE
 from zipfile import ZipFile
 
+import botocore.exceptions
 import cassandra
 import cassandra.cluster
 import requests
@@ -76,6 +77,10 @@ from medusa.utils import MedusaTempFile
 
 TRUNK_VERSION = 'github:apache/trunk'
 
+# Configurations backed by the local storage provider, which have no bucket to create and no
+# server-side encryption to check.
+LOCAL_STORAGE_CONFIGS = ('local',)
+
 storage_prefix = "{}-{}".format(datetime.datetime.now().isoformat(), str(uuid.uuid4()))
 os.chdir("..")
 certfile = "{}/resources/local_with_ssl/rootCa.crt".format(os.getcwd())
@@ -103,7 +108,8 @@ MUTUAL_AUTH_SERVER_KEY = "/tmp/mutual_auth_server.key"
 TRUNK_VERSION = 'github:apache/trunk'
 
 # hide cassandra driver logs, they are overly verbose and we don't really need them for tests
-for logger_name in {'cassandra.io', 'cassandra.pool', 'cassandra.cluster', 'cassandra.connection'}:
+for logger_name in {'cassandra.io', 'cassandra.pool', 'cassandra.cluster', 'cassandra.connection',
+                    's3_encryption'}:
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.CRITICAL)
 
@@ -123,7 +129,7 @@ def cleanup_monitoring(context):
 
 
 def cleanup_storage(context, storage_provider):
-    if storage_provider == "local":
+    if storage_provider in LOCAL_STORAGE_CONFIGS:
         if os.path.isdir(os.path.join("/tmp", "medusa_it_bucket")):
             shutil.rmtree(os.path.join("/tmp", "medusa_it_bucket"))
         os.makedirs(os.path.join("/tmp", "medusa_it_bucket"))
@@ -704,8 +710,8 @@ def get_medusa_config(context, storage_provider, client_encryption, cassandra_ur
     else:
         config_file = Path(os.path.join(os.path.abspath("."), f'resources/config/medusa-{storage_provider}.ini'))
 
-    create_storage_specific_resources(storage_provider)
     config = medusa.config.load_config(args, config_file)
+    create_storage_specific_resources(storage_provider, config)
     return config
 
 
@@ -716,16 +722,40 @@ def parse_medusa_config(
     args = get_args(context, client_encryption, cassandra_url, use_mgmt_api, grpc,
                     ca_cert, tls_cert, tls_key)
     config_file = Path(os.path.join(os.path.abspath("."), f'resources/config/medusa-{storage_provider}.ini'))
-    create_storage_specific_resources(storage_provider)
     config = medusa.config.parse_config(args, config_file)
     return config
 
 
-def create_storage_specific_resources(storage_provider):
-    if storage_provider == "local":
+def create_storage_specific_resources(storage_provider, config=None):
+    if storage_provider in LOCAL_STORAGE_CONFIGS:
         if os.path.isdir(os.path.join("/tmp", "medusa_it_bucket")):
             shutil.rmtree(os.path.join("/tmp", "medusa_it_bucket"))
         os.makedirs(os.path.join("/tmp", "medusa_it_bucket"))
+    elif storage_provider.startswith("minio") and config is not None:
+        create_minio_bucket(config)
+
+
+def create_minio_bucket(config):
+    """
+    Create the bucket the MinIO configuration points at, if it is not there yet.
+
+    MinIO runs locally for the integration tests, so unlike the cloud backends nothing else creates
+    its buckets. The plaintext and the client-side encryption configurations deliberately use
+    different buckets, and a config pointing at a bucket nobody creates fails in a particularly
+    unhelpful way - the S3 client retries until the whole run times out. Creating it here keeps the
+    suite runnable with nothing but a running MinIO.
+
+    Only MinIO: the cloud backends run against real accounts, where creating buckets on the fly
+    would be presumptuous at best.
+    """
+    bucket_name = config.storage.bucket_name
+    with Storage(config=config.storage) as storage:
+        s3_client = storage.storage_driver.s3_client
+        try:
+            s3_client.head_bucket(Bucket=bucket_name)
+        except botocore.exceptions.ClientError:
+            logging.info(f"Creating MinIO bucket {bucket_name}")
+            s3_client.create_bucket(Bucket=bucket_name)
 
 
 @when(r'I create the "{table_name}" table in keyspace "{keyspace_name}"')
@@ -1626,6 +1656,8 @@ def _i_manipulate_a_random_sstable(context, operation, backup_type, backup_name,
         sstable_files = [x for x in sstable_files if ('-Statistics.db' not in x) and ('idx') not in x]
         random.shuffle(sstable_files)
 
+        logging.info(f"Deleting sstable file: {sstable_files[0]} from table {table} in keyspace {keyspace}")
+
         file_path = Path(os.path.join(table_path, sstable_files[0]))
         if operation == "delete":
             os.remove(file_path)
@@ -1659,8 +1691,9 @@ def _i_can_fecth_tokenmap_of_backup_named(context, backup_name):
 @then(r'the schema of the backup named "{backup_name}" was uploaded with KMS key according to "{storage_provider}"')
 def _the_schema_was_uploaded_with_kms_key_according_to_storage(context, backup_name, storage_provider):
 
-    # testing server-side encryption is not irrelevant when running with local storage
-    if storage_provider == 'local':
+    # server-side encryption is a cloud storage concept: there is nothing to assert on the local
+    # backend, with or without client-side encryption
+    if storage_provider in LOCAL_STORAGE_CONFIGS:
         return
 
     # we're testing the schema blob, because that one is written from a string
@@ -1703,7 +1736,7 @@ def _all_files_of_table_in_backup_were_uploaded_with_key_configured_in_storage_c
         context, fqtn, backup_name, storage_provider
 ):
     # testing server-side encryption is not irrelevant when running with local storage
-    if storage_provider == 'local':
+    if storage_provider in LOCAL_STORAGE_CONFIGS:
         return
 
     # in this step we're testing the code path that uploads actual files (not just stuff written directly)

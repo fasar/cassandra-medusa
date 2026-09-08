@@ -14,11 +14,13 @@
 # limitations under the License.
 
 import itertools
+import json
 import logging
 import operator
 import pathlib
 import re
 import typing as t
+import collections
 
 
 from tenacity import retry
@@ -81,8 +83,38 @@ class Storage(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.storage_driver.disconnect()
 
+    # Client-side encryption is implemented with the Amazon S3 Encryption Client, so it exists for
+    # the S3 providers and for nothing else. s3_rgw, ibm_storage and s3_compatible are S3 APIs
+    # behind other names; the AWS regions are the providers whose name starts with s3.
+    ENCRYPTION_CAPABLE_PROVIDERS = ('s3_rgw', 's3_compatible', 'ibm_storage')
+
+    def _check_encryption_settings(self):
+        # Test doubles stand in for the config with plain dicts and mocks, so read the key the
+        # tolerant way rather than assuming a StorageConfig
+        try:
+            key = self._config.key_secret_base64
+        except (AttributeError, KeyError):
+            key = None
+        if not isinstance(key, (str, bytes)) or not key:
+            return
+        provider = self._config.storage_provider.lower()
+        if provider not in self.ENCRYPTION_CAPABLE_PROVIDERS and not provider.startswith('s3'):
+            raise ValueError(
+                'Client-side encryption (key_secret_base64 / key_secret_file) is only supported with the S3 storage '
+                'providers, not with storage_provider = {}'.format(self._config.storage_provider)
+            )
+        if self._config.sse_c_key:
+            # The S3 Encryption Client forwards extra arguments to the first request of a multipart
+            # upload only, and SSE-C needs its key on every part. Rather than fail halfway through
+            # an upload, refuse a combination that would anyway encrypt the ciphertext twice.
+            raise ValueError(
+                'sse_c_key cannot be combined with client-side encryption. Use kms_id for server-side '
+                'encryption on top of it, or drop one of the two.'
+            )
+
     def _load_storage(self):
         logging.debug('Loading storage_provider: {}'.format(self._config.storage_provider))
+        self._check_encryption_settings()
         if self._config.storage_provider.lower() == 'google_storage':
             google_storage = GoogleStorage(self._config)
             return google_storage
@@ -498,7 +530,7 @@ class Storage(object):
             prefix = ""
         return f"{prefix}{fqdn}/data/"
 
-    def list_files_per_table(self) -> t.Dict[str, t.Dict[str, t.Set[ManifestObject]]]:
+    def list_files_per_table(self) -> t.Dict[str, t.Dict[str, t.Dict[str, ManifestObject]]]:
         fdns_data_prefix = self._get_table_prefix(self.config.prefix, self.config.fqdn)
         all_blobs: t.List[AbstractBlob] = self.storage_driver.list_blobs(prefix=fdns_data_prefix)
         all_files = [ManifestObject(blob.name, blob.size, blob.hash) for blob in all_blobs]
@@ -509,5 +541,50 @@ class Storage(object):
             files_by_keyspace_and_table[ks] = dict()
             for tt, t_files in itertools.groupby(ks_files, lambda tf: tf[1]):
                 files_by_keyspace_and_table[ks][tt] = {pathlib.Path(tf[2].path).name: tf[2] for tf in t_files}
+
+        return files_by_keyspace_and_table
+
+    def get_files_from_all_differential_backups(self) -> t.Dict[str, t.Dict[str, t.Dict[str, ManifestObject]]]:
+        files_by_keyspace_and_table = collections.defaultdict(lambda: collections.defaultdict(dict))
+
+        # List all backups (sorted by date)
+        backups = list(self.list_node_backups(fqdn=self.config.fqdn))
+
+        # Filter backups to only include differential backups.
+        # Differential backups use a shared data pool and should not link to Full backups (which are isolated).
+        relevant_backups = [b for b in backups if b.is_differential]
+
+        for backup in relevant_backups:
+            try:
+                manifest_str = backup.manifest
+                if not manifest_str:
+                    continue
+                manifest_data = json.loads(manifest_str)
+
+                for section in manifest_data:
+                    for obj in section['objects']:
+                        path = obj['path']
+                        size = obj['size']
+                        md5 = obj['MD5']
+                        source_size = obj.get('source_size')
+                        source_md5 = obj.get('source_MD5')
+
+                        p = pathlib.Path(path)
+                        # Filename from path
+                        filename = p.name
+
+                        # Construct ManifestObject
+                        mo = ManifestObject(path, size, md5, source_size, source_md5)
+
+                        # Derive keyspace and table using the same logic as list_files_per_table
+                        try:
+                            ks, table = Storage.sanitize_keyspace_and_table_name(p)
+                            files_by_keyspace_and_table[ks][table][filename] = mo
+                        except RuntimeError:
+                            # Skip files that don't match SSTable path structure (e.g. if path is weird)
+                            logging.debug(f"Skipping {path} from manifest as it doesn't look like an SSTable")
+
+            except Exception as e:
+                logging.warning(f"Failed to process manifest for backup {backup.name}: {e}")
 
         return files_by_keyspace_and_table

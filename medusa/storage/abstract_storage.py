@@ -22,6 +22,7 @@ import hashlib
 import io
 import logging
 import pathlib
+import re
 import typing as t
 
 from pathlib import Path
@@ -35,12 +36,41 @@ MULTIPART_BLOCKS_PER_MB = 16
 MAX_UP_DOWN_LOAD_RETRIES = 5
 
 
+# Backup metadata (tokenmap.json, schema.cql, manifest.json, server_version.json, the
+# differential/incremental markers, backup_name.txt) is always stored as plaintext, so that a
+# backup stays inspectable and its index usable without the encryption key.
+PLAINTEXT_FILES_REGEX = re.compile(
+    'tokenmap|schema|manifest|differential|incremental|server_version|backup_name|restore_verify_query'
+)
+
+
+def is_plaintext_object(name: str) -> bool:
+    """
+    Whether an object is stored unencrypted even when client-side encryption is on.
+
+    Upload and download have to agree on this, otherwise a file is written one way and read the
+    other, which corrupts it silently. This predicate gives both sides a single place to consult.
+
+    Matching is on the base name only: SSTable components (Data.db, Index.db, Digest.crc32, ...)
+    never carry any of these words, so a user table named e.g. "schema_history" is unaffected.
+    """
+    return bool(PLAINTEXT_FILES_REGEX.search(name))
+
+
 AbstractBlob = collections.namedtuple('AbstractBlob', ['name', 'size', 'hash', 'last_modified', 'storage_class'])
 
 AbstractBlobMetadata = collections.namedtuple('AbstractBlobMetadata',
                                               ['name', 'sse_enabled', 'sse_key_id', 'sse_customer_key_md5'])
 
-ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5'])
+# source_size and source_MD5 describe the file before client-side encryption, and are only
+# written for encrypted differential backups; everywhere else they stay None and are left out of
+# the manifest. Without them a differential backup could not compare a local file to an encrypted
+# object, whose size and ETag are those of the ciphertext.
+ManifestObject = collections.namedtuple(
+    'ManifestObject',
+    ['path', 'size', 'MD5', 'source_size', 'source_MD5'],
+    defaults=[None, None]
+)
 
 
 class ObjectDoesNotExistError(Exception):
@@ -55,6 +85,18 @@ class AbstractStorage(abc.ABC):
 
     def __init__(self, config):
         self.config = config
+
+    @property
+    def encryption_enabled(self) -> bool:
+        """
+        Client-side encryption is on when a key is configured, and only then. There is no separate
+        switch: a key that is set but not used would be the more surprising state.
+        """
+        try:
+            key = self.config.key_secret_base64
+        except (AttributeError, KeyError):
+            return False
+        return isinstance(key, (str, bytes)) and bool(key)
         self.bucket_name = config.bucket_name
 
     @abc.abstractmethod

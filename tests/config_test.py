@@ -267,5 +267,59 @@ class ConfigTest(unittest.TestCase):
         mock_log_error.assert_called_with('Required configuration "prefix" cannot contain a slash ("/")')
 
 
+class EncryptionKeyConfigTest(unittest.TestCase):
+    """
+    The client-side encryption key protects every backup. It must not be forced into medusa.ini,
+    which configuration management usually templates and which is often readable more widely than
+    the key deserves.
+    """
+
+    ENV_VARS = ['MEDUSA_KEY_SECRET_BASE64', 'MEDUSA_KEY_SECRET_FILE']
+
+    def setUp(self):
+        self.medusa_config_file = pathlib.Path(__file__).parent / "resources/config/medusa.ini"
+        for name in self.ENV_VARS:
+            os.environ.pop(name, None)
+
+    def tearDown(self):
+        for name in self.ENV_VARS:
+            os.environ.pop(name, None)
+
+    def _load(self):
+        return medusa.config.load_config({}, self.medusa_config_file)
+
+    def test_no_key_configured_leaves_encryption_off(self):
+        self.assertFalse(self._load().storage.key_secret_base64)
+
+    def test_key_can_come_from_the_environment(self):
+        os.environ['MEDUSA_KEY_SECRET_BASE64'] = 'a2V5LWZyb20tdGhlLWVudmlyb25tZW50'
+
+        self.assertEqual(
+            self._load().storage.key_secret_base64, 'a2V5LWZyb20tdGhlLWVudmlyb25tZW50'
+        )
+
+    def test_key_can_come_from_a_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            key_file = os.path.join(tmp_dir, 'medusa-encryption-key')
+            with open(key_file, 'w') as f:
+                # a trailing newline is what any editor and any `echo` will leave behind
+                f.write('a2V5LWxvYWRlZC1mcm9tLWEtZmlsZQ==\n')
+            os.environ['MEDUSA_KEY_SECRET_FILE'] = key_file
+
+            self.assertEqual(
+                self._load().storage.key_secret_base64, 'a2V5LWxvYWRlZC1mcm9tLWEtZmlsZQ=='
+            )
+
+    def test_the_file_wins_over_the_environment_variable(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            key_file = os.path.join(tmp_dir, 'medusa-encryption-key')
+            with open(key_file, 'w') as f:
+                f.write('ZnJvbS10aGUtZmlsZQ==')
+            os.environ['MEDUSA_KEY_SECRET_BASE64'] = 'ZnJvbS10aGUtZW52'
+            os.environ['MEDUSA_KEY_SECRET_FILE'] = key_file
+
+            self.assertEqual(self._load().storage.key_secret_base64, 'ZnJvbS10aGUtZmlsZQ==')
+
+
 if __name__ == '__main__':
     unittest.main()

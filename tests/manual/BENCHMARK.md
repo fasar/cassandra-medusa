@@ -417,3 +417,102 @@ Extra storage                = C5 % of current backup footprint
   does not.
 - **The measurement does not include key management.** Reading a key from a secrets manager on each
   invocation can cost more than the encryption itself on a small dataset.
+
+---
+
+## 5. Measured: S3 Encryption Client (this branch) vs AWS Encryption SDK (`cse_manually_test`)
+
+Run with `tests/manual/run_benchmark.py` on 2026-09-08, the same runner on both branches, against
+the same MinIO, with the same dataset size and the same settings. Single node, so the figures
+describe the per-node cost; the network is a loopback, so wall clock is what the code costs, not
+what a link costs.
+
+**Table T0 — environment**
+
+| Item | Value |
+|---|---|
+| Number of nodes | 1 (CCM) |
+| vCPU | 16 |
+| RAM (GB) | 31 |
+| CPU model | 13th Gen Intel Core i7-1360P |
+| Data disk | overlay filesystem, SSD-backed |
+| Cassandra version | 4.1.9 |
+| Medusa version | 0.28.0-dev, branches `boto3_cse` and `cse_manually_test` |
+| Python version | 3.11 |
+| Storage backend | `s3_compatible`, MinIO RELEASE.2025-09-07 on 127.0.0.1:9000 |
+| `concurrent_transfers` | 4 |
+| `multipart_chunksize` | 50MB (default) |
+| `transfer_max_bandwidth` | unlimited (§5.1) · 50MB/s, the Medusa default (§5.2) |
+
+**Table T1 — dataset**: `cassandra-stress write n=3000000`, compacted: D ≈ 743 MB in 227 objects,
+one 654 MB `Data.db` and one 50 MB `Index.db` among them.
+
+### 5.1 Bandwidth unlimited, median of 3 runs
+
+| Ref | Measurement | S3EC wall (s) | S3EC CPU (s) | S3EC RSS (MB) | ESDK wall (s) | ESDK CPU (s) | ESDK RSS (MB) |
+|---|---|---|---|---|---|---|---|
+| M1 | full backup, no encryption | 5.6 | 7.5 | 126 | 5.7 | 7.9 | 128 |
+| M2 | full backup, encrypted | 8.3 | 8.1 | 374 | 9.5 | 11.7 | 810 |
+| M3 | differential, no encryption | 5.9 | 7.2 | 123 | 6.0 | 8.1 | 129 |
+| M4 | differential, encrypted | 8.8 | 8.9 | 385 | 9.6 | 11.7 | 818 |
+| M5 | restore, no encryption | 15.2 | 6.0 | 118 | 15.3 | 6.4 | 116 |
+| M6 | restore, encrypted | 15.3 | 6.2 | 125 | 17.2 | 8.0 | 142 |
+| M7a | verify, no encryption | 0.8 | 0.8 | 117 | 0.8 | 0.7 | 114 |
+| M7b | verify, encrypted | 0.8 | 0.8 | 117 | 0.8 | 0.8 | 115 |
+
+| | S3EC | ESDK |
+|---|---|---|
+| S1 plaintext bytes (227 objects) | 743,644,616 | 743,523,897 |
+| S2 encrypted bytes (227 objects) | 743,646,418 | 743,574,947 |
+| S2 − S1 | 1,802 (16 bytes × 113 encrypted objects, minus rounding on `manifest.json` sizes) | 51,050 |
+
+**Table R — results, unlimited**
+
+| Ref | Quantity | S3EC | ESDK | Unit |
+|---|---|---|---|---|
+| C1 | CPU cost of encryption | **0.84** | 5.37 | CPU-s / GiB |
+| C2 | CPU ratio, backup | 1.08 | 1.47 | × |
+| C3 | Wall ratio, backup | 1.48 | 1.66 | × |
+| C4_plain | Throughput without | 126.4 | 123.5 | MB/s |
+| C4_cse | Throughput with | **85.6** | 74.5 | MB/s |
+| C5 | Storage overhead | 0.00 | 0.01 | % |
+| C6_cpu | CPU ratio, restore | 1.02 | 1.26 | × |
+| C6_wall | Wall ratio, restore | 1.01 | 1.12 | × |
+| C7_cpu | CPU ratio, differential | 1.25 | 1.44 | × |
+| C7_wall | Wall ratio, differential | 1.49 | 1.60 | × |
+| C8 | Extra peak memory | **248** | 683 | MB |
+
+### 5.2 Bandwidth capped at 50MB/s (the Medusa default), 1 run, backups only
+
+| Ref | Measurement | S3EC wall (s) | S3EC CPU (s) | ESDK wall (s) | ESDK CPU (s) |
+|---|---|---|---|---|---|
+| M1 | full backup, no encryption | 19.9 | 8.2 | 20.1 | 9.2 |
+| M2 | full backup, encrypted | 22.3 | 9.5 | 23.9 | 12.9 |
+| M3 | differential, no encryption | 20.9 | 8.1 | 21.3 | 9.6 |
+| M4 | differential, encrypted | 23.7 | 9.5 | 25.0 | 12.9 |
+
+| Ref | Quantity | S3EC | ESDK | Unit |
+|---|---|---|---|---|
+| C3 | Wall ratio, backup | 1.12 | 1.19 | × |
+| C4_cse | Throughput with | 31.8 | 29.7 | MB/s |
+| C8 | Extra peak memory | 251 | 687 | MB |
+
+### 5.3 Reading these figures
+
+- **CPU.** One AES-GCM pass with a single per-object key costs 0.84 CPU-s per GiB; the SDK's
+  framed format, with its per-frame derivation and authentication, costs six times that. On a
+  16-core node neither is visible; on a 2-vCPU node the difference is a few percent of a backup.
+- **Wall clock.** With encryption the parts of a file are uploaded one after the other, whereas
+  boto3 uploads four parts of a plaintext file in parallel: that, not the cryptography, is C3.
+  It only shows on a link faster than one part stream. Under the default 50MB/s cap - or any
+  real WAN - C3 falls to 1.12 and both implementations sit at the cap.
+- **Memory.** C8 is `concurrent_transfers × 4 × multipart_chunksize` plus a little, as expected
+  (4 × 4 × 50 MB = 800 MB worst case, 248 MB observed with only two files large enough to go
+  multipart). Lower `multipart_chunksize` to lower it; it does not grow with the file size.
+- **Restore** is dominated by stopping and starting Cassandra; decryption adds nothing
+  measurable (C6 ≈ 1).
+- **Storage.** 16 bytes per encrypted object plus a few hundred bytes of metadata that the
+  object size does not count.
+- **The limiter change matters.** Before the ciphertext was wrapped after botocore's own reads of
+  the body, the same 50MB/s cap delivered 15 MB/s on encrypted uploads (wall 72 s instead of
+  22 s for M2). Any regression there shows up as C3 ≫ 1 under a cap.

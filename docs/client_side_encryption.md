@@ -261,4 +261,8 @@ knowing before you rely on CSE: see [What is *not* encrypted](#what-is-not-encry
 - **Disk.** No temporary file is written on either side.
 - **Storage.** 16 bytes per object, plus a few hundred bytes of metadata.
 
-`tests/manual/BENCHMARK.md` describes how to measure the cost on your own cluster.
+Measured on a 16-core node against a local MinIO (`tests/manual/BENCHMARK.md`, §5): 0.84
+CPU-seconds per GiB of encrypted backup, about 250 MB of extra peak memory with four concurrent
+transfers and 50 MB parts, no measurable cost on restore, and under Medusa's default 50MB/s
+bandwidth cap a backup 12% longer than without encryption. `tests/manual/BENCHMARK.md` describes
+how to measure the cost on your own cluster.

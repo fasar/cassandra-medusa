@@ -56,8 +56,8 @@ PyYAML = "6.0.1"
 cassandra-driver = "3.29.2"
 psutil = "5.9.6"
 lockfile = "0.12.2"
-pyOpenSSL = "25.0.0"
-cryptography = "44.0.1"
+pyOpenSSL = "26.2.0"
+cryptography = "48.0.1"
 pycryptodome = "3.19.1"
 tenacity = "9.1.2"
 ssh2-python = "1.1.1"
@@ -69,17 +69,24 @@ gevent = "25.4.1"
 greenlet = "3.2.0"
 fasteners = "0.16"
 datadog = "0.47.0"
-botocore = "1.40.41"
-boto3 = "1.40.41"
+botocore = "1.43.89"
+boto3 = "1.43.89"
 dnspython = "2.6.1"
 asyncio = "3.4.3"
 aiohttp = "3.13.3"
 aiofiles = "23.2.1"
-gcloud-aio-storage = "9.6.0"
+gcloud-aio-storage = "9.6.4"
 azure-core = "1.29.4"
 azure-identity = "1.16.1"
 azure-storage-blob = "12.17.0"
 urllib3 = "2.6.0"
+# Optional dependency for client-side encryption of S3 objects. Pinned exactly like every other
+# dependency here, and more deliberately than most: this one decides the on-disk format of the
+# encrypted backups, and Medusa relies on a custom keyring built on its extension point.
+amazon-s3-encryption-client-python = { version = "4.0.0", optional = true }
+
+[tool.poetry.extras]
+encryption = ["amazon-s3-encryption-client-python"]
 
 [tool.poetry.group.grpc.dependencies]
 protobuf = "5.29.5"

@@ -298,6 +298,19 @@ class EncryptionClientRoundTripTest(unittest.TestCase):
         with self.assertRaises(S3EncryptionClientError):
             self.client.get_object(Bucket=BUCKET, Key='nope')
 
+    def test_only_the_bytes_sent_count_against_the_bandwidth_limit(self):
+        # botocore reads the body for the request checksum and again for the signature before it
+        # sends it. Wrapped too early, the limiter charged those reads too and a 1 MB/s limit
+        # delivered a third of that. 3 MB at 1 MB/s: about three seconds, not six or nine.
+        import time
+        limiter = make_bandwidth_limiter(1024 * 1024)
+        client = self.new_client(self.key, bandwidth_limiter=limiter)
+        started = time.monotonic()
+        client.put_object(Bucket=BUCKET, Key='throttled', Body=os.urandom(3 * 1024 * 1024))
+        elapsed = time.monotonic() - started
+        self.assertGreater(elapsed, 1.5, 'the limiter did not apply at all')
+        self.assertLess(elapsed, 5.0, 'the limiter charged reads that never reached the wire')
+
     def test_the_bandwidth_limiter_wraps_the_ciphertext_of_every_upload_request(self):
         limiter = make_bandwidth_limiter(100 * 1024 * 1024)
         client = self.new_client(self.key, bandwidth_limiter=limiter)

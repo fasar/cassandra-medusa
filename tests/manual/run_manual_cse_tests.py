@@ -313,7 +313,7 @@ def storage_checks(config_file, encrypted, backup_name):
         # Client stores the wrapped data key in the object's user metadata (x-amz-meta-x-amz-3),
         # and the ciphertext is the plaintext plus a 16-byte authentication tag; the manifest of a
         # differential backup records both sizes.
-        data_blob = next((n for n in names if n.endswith('-Data.db') and f'/{backup_name}/' in n), None)
+        data_blob = next((n for n in names if n.endswith('-Data.db')), None)
         if data_blob is None:
             raise Failure('no SSTable found in storage')
         driver = storage.storage_driver
@@ -505,6 +505,10 @@ def main():
         except Failure as failure:
             results[name] = ('FAIL', time.time() - started, str(failure))
             log(f'Configuration {name}: FAIL\n{failure}', level='!!!')
+        finally:
+            # whatever happened, do not leave a Cassandra holding the ports the next run needs
+            stop_cluster(SRC_CLUSTER)
+            stop_cluster(DST_CLUSTER)
 
     log('')
     log('=' * 78)

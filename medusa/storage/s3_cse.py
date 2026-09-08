@@ -284,24 +284,27 @@ def limit_bandwidth(limiter: BandwidthLimiter, stream):
 
 class _LimitUploadBandwidth:
     """
-    A before-call handler that throttles the ciphertext on its way out.
+    A request-created handler that throttles the ciphertext on its way out.
 
     The client has no bandwidth setting. It replaces the request body with the ciphertext in its
-    own before-call handler; this one, registered after it, wraps that ciphertext in the stream
-    s3transfer itself uses to enforce max_bandwidth, so the throttling is the same as on a
-    plaintext upload.
+    own before-call handler; this one wraps that ciphertext in the stream s3transfer itself uses to
+    enforce max_bandwidth. It runs at request-created, after botocore has read the body for the
+    request checksum and for the signature, so that only the bytes going out on the wire count
+    against the limit: wrapping earlier made a 50 MB/s limit deliver 15 MB/s.
     """
 
     def __init__(self, limiter: BandwidthLimiter):
         self._limiter = limiter
 
-    def __call__(self, params, **kwargs):
-        body = params.get('body')
-        if body is None:
+    def __call__(self, request, operation_name, **kwargs):
+        body = request.data
+        if operation_name not in ('PutObject', 'UploadPart'):
+            return
+        if not body or isinstance(body, dict) or hasattr(body, 'signal_transferring'):
             return
         if isinstance(body, (bytes, bytearray)):
             body = io.BytesIO(body)
-        params['body'] = limit_bandwidth(self._limiter, body)
+        request.data = limit_bandwidth(self._limiter, body)
 
 
 def build_encryption_client(s3_client, key_bytes: bytes, bandwidth_limiter: BandwidthLimiter = None):
@@ -325,7 +328,9 @@ def build_encryption_client(s3_client, key_bytes: bytes, bandwidth_limiter: Band
     )
     client = S3EncryptionClient(s3_client, config)
     if bandwidth_limiter is not None:
-        handler = _LimitUploadBandwidth(bandwidth_limiter)
-        for operation in ('PutObject', 'UploadPart'):
-            s3_client.meta.events.register('before-call.s3.{}'.format(operation), handler)
+        # On the same event as the signer, and after it: botocore runs the handlers of the more
+        # specific request-created.s3.PutObject before those of request-created.s3, so a handler
+        # registered on the operation's own event would still be ahead of the signature.
+        s3_client.meta.events.register_last('request-created.s3', _LimitUploadBandwidth(bandwidth_limiter),
+                                            unique_id='medusa-cse-bandwidth')
     return client

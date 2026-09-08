@@ -78,11 +78,15 @@ def measure(label, cmd):
     report = WORK / f'bench-{label}.txt'
     log(f'measuring {label}: ' + ' '.join(str(c) for c in cmd))
     started = time.time()
+    if os.environ.get('BENCH_DEBUG'):
+        cmd = [cmd[0], '-vv', *cmd[1:]]   # medusa --config-file ... -> debug logging with timestamps
     result = subprocess.run(
         ['/usr/bin/time', '-v', '-o', str(report), *[str(c) for c in cmd]],
         cwd=str(REPO), capture_output=True, text=True,
         env={**os.environ, 'PYTHONWARNINGS': 'ignore'},
     )
+    # keep medusa's own output next to the measurement: it is what explains a surprising figure
+    (WORK / f'bench-{label}.out').write_text(result.stdout + result.stderr)
     if result.returncode != 0:
         raise RuntimeError(f'{label} failed:\n{result.stdout[-2000:]}\n{result.stderr[-3000:]}')
 
@@ -214,8 +218,9 @@ def write_config(name, encrypted, prefix, provider, max_bandwidth=None, chunksiz
             'region = default',
             'base_path = /tmp',
         ]
-    if max_bandwidth:
-        lines.append(f'transfer_max_bandwidth = {max_bandwidth}')
+    # Medusa's default is 50MB/s, which on a fast link measures the cap rather than the code.
+    # Unlimited unless asked otherwise; an empty value is how the config says "no limit".
+    lines.append(f'transfer_max_bandwidth = {max_bandwidth or ""}')
     if chunksize:
         lines.append(f'multipart_chunksize = {chunksize}')
     if encrypted:
@@ -295,7 +300,8 @@ def main():
     parser.add_argument('--provider', choices=('minio', 'local'), default='minio',
                         help='storage backend (default minio; local cannot encrypt on this branch)')
     parser.add_argument('--max-bandwidth', default=None,
-                        help='transfer_max_bandwidth for both configurations, e.g. 20MB/s (default: unlimited)')
+                        help='transfer_max_bandwidth for both configurations, e.g. 50MB/s, the Medusa default '
+                             '(default here: unlimited, so that the code is measured rather than the cap)')
     parser.add_argument('--multipart-chunksize', default=None,
                         help='multipart_chunksize for both configurations, e.g. 16MB (default: Medusa default)')
     args = parser.parse_args()
@@ -386,7 +392,7 @@ def report(r, dataset, args):
     print('\n' + '=' * 76)
     print('T1  dataset D = {:,} bytes ({:.2f} GiB), median of {} runs, storage {}{}{}'.format(
         dataset, gib, args.repeats, args.provider,
-        f', max bandwidth {args.max_bandwidth}' if args.max_bandwidth else '',
+        f', max bandwidth {args.max_bandwidth}' if args.max_bandwidth else ', bandwidth unlimited',
         f', chunk {args.multipart_chunksize}' if args.multipart_chunksize else ''))
     print('=' * 76)
     print(f'{"Ref":<5} {"Measurement":<34} {"Wall(s)":>9} {"CPU(s)":>9} {"RSS(MB)":>9}')

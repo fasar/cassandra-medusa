@@ -42,7 +42,9 @@ from urllib3.response import HTTPResponse
 S3_XMLNS = 'http://s3.amazonaws.com/doc/2006-03-01/'
 METADATA_PREFIX = 'x-amz-meta-'
 # Request headers other than metadata that tests assert on, kept per object as sent.
-RECORDED_HEADERS = ('x-amz-storage-class', 'x-amz-server-side-encryption', 'x-amz-server-side-encryption-aws-kms-key-id')
+RECORDED_HEADERS = (
+    'x-amz-storage-class', 'x-amz-server-side-encryption', 'x-amz-server-side-encryption-aws-kms-key-id'
+)
 
 
 def make_client(endpoint_url='http://127.0.0.1:1'):
@@ -162,8 +164,8 @@ class FakeS3:
         self.store(bucket, key, b''.join(parts), upload['metadata'])
         obj = self.objects[(bucket, key)]
         obj['headers'] = upload['headers']
-        obj['etag'] = '"{}-{}"'.format(hashlib.md5(b''.join(hashlib.md5(p).digest() for p in parts)).hexdigest(),
-                                      len(parts))
+        digests = b''.join(hashlib.md5(p).digest() for p in parts)
+        obj['etag'] = '"{}-{}"'.format(hashlib.md5(digests).hexdigest(), len(parts))
         xml = '<CompleteMultipartUploadResult xmlns="{}"><Bucket>{}</Bucket><Key>{}</Key><ETag>{}</ETag>' \
               '</CompleteMultipartUploadResult>'.format(S3_XMLNS, bucket, key, obj['etag'].replace('"', '&quot;'))
         return self._respond(request, 200, body=xml.encode('utf-8'))

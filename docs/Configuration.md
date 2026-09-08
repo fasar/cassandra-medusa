@@ -132,6 +132,13 @@ backup_grace_period_in_days = 10
 
 ;aws_cli_path = <Location of the aws cli binary if not in PATH>
 
+; Client-side encryption of SSTables, S3 storage providers only. The key is base64 encoded and
+; 32 bytes once decoded; setting it is what turns encryption on. Prefer key_secret_file, or the
+; MEDUSA_KEY_SECRET_BASE64 environment variable, over writing the key into this file.
+; Cannot be combined with sse_c_key. See docs/client_side_encryption.md.
+;key_secret_file = /etc/medusa/medusa-encryption-key
+;key_secret_base64 = 
+
 [monitoring]
 ;monitoring_provider = <Provider used for sending metrics. Currently just "local">
 

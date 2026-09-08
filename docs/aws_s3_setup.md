@@ -112,3 +112,9 @@ key_file = /etc/medusa/medusa-s3-credentials
 ```
 
 Medusa should now be able to access the bucket and perform all required operations.
+
+### Client-side encryption
+
+Medusa can encrypt the SSTables it uploads before they leave the node, with a key that never
+reaches AWS: see [Client-side encryption](client_side_encryption.md). Encryption and decryption
+stream, so no temporary file is written and memory use does not grow with the size of the SSTable.

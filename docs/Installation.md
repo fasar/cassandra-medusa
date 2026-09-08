@@ -19,6 +19,7 @@ Install Medusa on each Cassandra node using one of the following methods.
 * if your backups are to be stored in AWS S3 or S3 compatible backends (IBM, OVHCloud, MinIO, ...), run `sudo pip3 install cassandra-medusa[S3]`
 * if your backups are to be stored in Google Cloud Storage, run `sudo pip3 install cassandra-medusa`
 * if your backups are to be stored in Azure Blob Storage, run `sudo pip3 install cassandra-medusa[AZURE]`
+* if you want client-side encryption of the SSTables stored in S3 (see [Client-side encryption](client_side_encryption.md)), run `sudo pip3 install cassandra-medusa[S3,encryption]`
 
 Running the installation using `sudo` is necessary to have the `/usr/local/bin/medusa` script created properly.
 

@@ -85,6 +85,7 @@ class AbstractStorage(abc.ABC):
 
     def __init__(self, config):
         self.config = config
+        self.bucket_name = config.bucket_name
 
     @property
     def encryption_enabled(self) -> bool:
@@ -97,7 +98,6 @@ class AbstractStorage(abc.ABC):
         except (AttributeError, KeyError):
             return False
         return isinstance(key, (str, bytes)) and bool(key)
-        self.bucket_name = config.bucket_name
 
     @abc.abstractmethod
     def connect(self):

@@ -15,6 +15,7 @@
 # limitations under the License.
 import asyncio
 import base64
+import contextlib
 import pathlib
 
 import boto3
@@ -29,11 +30,13 @@ from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from pathlib import Path
-from tenacity import retry, stop_after_attempt, wait_fixed
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_fixed
 
+from medusa.storage import s3_cse
 from medusa.storage.abstract_storage import (
-    AbstractStorage, AbstractBlob, AbstractBlobMetadata, ManifestObject, ObjectDoesNotExistError
+    AbstractStorage, AbstractBlob, AbstractBlobMetadata, ManifestObject, ObjectDoesNotExistError, is_plaintext_object
 )
+from medusa.storage.s3_cse import S3EncryptionClientSecurityError, WrongKeyError
 
 
 MAX_UP_DOWN_LOAD_RETRIES = 5
@@ -113,6 +116,18 @@ class S3BaseStorage(AbstractStorage):
             logging.debug("Using SSE-C key *****")
             self.sse_c_key = base64.b64decode(config.sse_c_key)
 
+        # Client-side encryption. The key is decoded here, not on first use, so that a bad key or
+        # a missing library fails when the storage is built rather than in the middle of a backup.
+        self.encryption_key = None
+        key_secret_base64 = self._optional_setting(config, 'key_secret_base64')
+        if key_secret_base64:
+            s3_cse.require_s3ec()
+            self.encryption_key = s3_cse.decode_key(key_secret_base64)
+            logging.info('Client-side encryption is enabled, key fingerprint {}'.format(
+                s3_cse.key_fingerprint(self.encryption_key)))
+        self.s3_cse_client = None
+        self.bandwidth_limiter = None
+
         self.credentials = self._consolidate_credentials(config)
         logging.info('Using credentials {}'.format(self.credentials))
 
@@ -147,28 +162,56 @@ class S3BaseStorage(AbstractStorage):
             read_timeout=self.read_timeout,
             s3={'addressing_style': self.config.s3_addressing_style},
         )
+        self.s3_client = self._make_boto_client(boto_config)
+
+        if self.encryption_key is not None:
+            # The S3 Encryption Client works by registering event handlers on the boto3 client it
+            # wraps, which then encrypts every put and decrypts every get. Backup metadata stays
+            # in plaintext and the listing, head and delete calls must see the ciphertext as it
+            # is, so the encrypting client gets a boto3 client of its own.
+            if self.transfer_config.max_bandwidth:
+                self.bandwidth_limiter = s3_cse.make_bandwidth_limiter(self.transfer_config.max_bandwidth)
+            self.s3_cse_client = s3_cse.build_encryption_client(
+                self._make_boto_client(boto_config), self.encryption_key, self.bandwidth_limiter
+            )
+
+    def _make_boto_client(self, boto_config):
         if self.credentials.access_key_id is not None:
-            self.s3_client = boto3.client(
+            return boto3.client(
                 's3',
                 config=boto_config,
                 aws_access_key_id=self.credentials.access_key_id,
                 aws_secret_access_key=self.credentials.secret_access_key,
                 **self.connection_extra_args
             )
-        else:
-            self.s3_client = boto3.client(
-                's3',
-                config=boto_config,
-                **self.connection_extra_args
-            )
+        return boto3.client(
+            's3',
+            config=boto_config,
+            **self.connection_extra_args
+        )
 
     def disconnect(self):
         logging.debug('Disconnecting from S3...')
         try:
             self.s3_client.close()
+            if self.s3_cse_client is not None:
+                self.s3_cse_client.close()
             self.executor.shutdown()
         except Exception as e:
             logging.error('Error disconnecting from S3: {}'.format(e))
+
+    @staticmethod
+    def _optional_setting(config, name):
+        # The config is a StorageConfig in production, but tests hand in dicts and mocks
+        try:
+            value = getattr(config, name)
+        except (AttributeError, KeyError):
+            return None
+        return value if isinstance(value, (str, bytes)) else None
+
+    def _encrypts(self, file_name: str) -> bool:
+        """Whether this object is stored encrypted: a key is configured and it is not backup metadata."""
+        return self.encryption_key is not None and not is_plaintext_object(file_name)
 
     def _make_connection_arguments(self, config) -> t.Dict[str, str]:
 
@@ -304,7 +347,8 @@ class S3BaseStorage(AbstractStorage):
         blob = await self._stat_blob(object_key)
         return blob
 
-    @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5000))
+    @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5000),
+           retry=retry_if_not_exception_type((S3EncryptionClientSecurityError, WrongKeyError)))
     async def _download_blob(self, src: str, dest: str):
         # boto has a connection pool, but it does not support the asyncio API
         # so we make things ugly and submit the whole download as a task to an executor
@@ -329,6 +373,10 @@ class S3BaseStorage(AbstractStorage):
             )
         )
 
+        if self._encrypts(src_path.name):
+            self.__download_encrypted_file(object_key, file_path)
+            return
+
         extra_args = {}
         if self.sse_c_key is not None:
             extra_args['SSECustomerAlgorithm'] = 'AES256'
@@ -346,6 +394,43 @@ class S3BaseStorage(AbstractStorage):
         except Exception as e:
             logging.error('Error downloading file from s3://{}/{}: {}'.format(self.bucket_name, object_key, e))
             raise ObjectDoesNotExistError('Object {} does not exist'.format(object_key))
+
+    def __download_encrypted_file(self, object_key: str, file_path: str):
+        """
+        get_object through the encrypting client, streamed to disk block by block.
+
+        download_file cannot be used: it fetches byte ranges in parallel, and a range of ciphertext
+        cannot be decrypted on its own. With delayed authentication the plaintext is written before
+        the authentication tag is checked, on the last block; whatever went wrong, a partial or
+        unauthenticated file must not be left where a restore would pick it up.
+        """
+        Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            response = self.s3_cse_client.get_object(Bucket=self.bucket_name, Key=object_key)
+            body = response['Body']
+            if self.bandwidth_limiter is not None:
+                body = s3_cse.limit_bandwidth(self.bandwidth_limiter, body)
+            with open(file_path, 'wb') as f_out:
+                while True:
+                    chunk = body.read(s3_cse.DOWNLOAD_BLOCK_SIZE)
+                    if not chunk:
+                        break
+                    f_out.write(chunk)
+        except S3EncryptionClientSecurityError as e:
+            self._remove_partial_file(file_path)
+            logging.error(
+                'Object s3://{}/{} failed authentication: it was altered after upload, or the encryption key '
+                'is not the one it was encrypted with. {}'.format(self.bucket_name, object_key, e))
+            raise
+        except Exception as e:
+            self._remove_partial_file(file_path)
+            logging.error('Error downloading encrypted object s3://{}/{}: {}'.format(self.bucket_name, object_key, e))
+            raise
+
+    @staticmethod
+    def _remove_partial_file(file_path):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(file_path)
 
     async def _stat_blob(self, object_key: str) -> AbstractBlob:
         try:
@@ -403,6 +488,11 @@ class S3BaseStorage(AbstractStorage):
             )
         )
 
+        if self._encrypts(src_path.name):
+            s3_cse.check_object_size(src, file_size)
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(self.executor, self.__upload_encrypted_file, src, object_key, extra_args)
+
         upload_conf = {
             'Filename': src,
             'Bucket': self.bucket_name,
@@ -431,6 +521,33 @@ class S3BaseStorage(AbstractStorage):
         blob_size = int(resp['ContentLength'])
         blob_hash = resp['ETag'].replace('"', '')
         return ManifestObject(blob_name, blob_size, blob_hash)
+
+    def __upload_encrypted_file(self, src: str, object_key: str, extra_args: t.Dict[str, str]) -> ManifestObject:
+        """
+        Upload one SSTable component through the encrypting client.
+
+        The file is opened here, in the executor thread, so that every retry of _upload_blob starts
+        again from the first byte with a fresh hash. The size and MD5 of the plaintext are taken
+        from the same pass the client reads, which is the only time the plaintext goes by.
+
+        Below the multipart threshold the client reads the whole body into memory, which is what
+        boto3's upload_file does for a plaintext file of that size too. Above it, the client uploads
+        one part of multipart_chunksize at a time, sequentially: unlike upload_file it does not
+        parallelize the parts of a single file, as one cipher spans the whole object.
+        """
+        with open(src, 'rb') as f:
+            reader = s3_cse.HashingReader(f)
+            if os.fstat(f.fileno()).st_size < self.transfer_config.multipart_threshold:
+                self.s3_cse_client.put_object(Bucket=self.bucket_name, Key=object_key, Body=reader.read(), **extra_args)
+            else:
+                self.s3_cse_client.upload_fileobj(
+                    reader, self.bucket_name, object_key,
+                    multipart_chunksize=self.transfer_config.multipart_chunksize,
+                    **extra_args
+                )
+
+        blob = self.__stat_blob(object_key)
+        return ManifestObject(blob.name, blob.size, blob.hash, reader.size, reader.md5_base64)
 
     async def _get_object(self, object_key: t.Union[Path, str]) -> AbstractBlob:
         blob = await self._stat_blob(str(object_key))

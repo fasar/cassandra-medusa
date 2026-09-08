@@ -45,6 +45,22 @@ except ImportError:
     HAS_S3EC = False
     S3Keyring = object
 
+    class S3EncryptionClientError(Exception):
+        """Stand-in so that callers can name the client's errors whether or not it is installed."""
+
+    class S3EncryptionClientSecurityError(Exception):
+        """Stand-in so that callers can name the client's errors whether or not it is installed."""
+
+
+class WrongKeyError(S3EncryptionClientError):
+    """
+    The object was encrypted by a key other than the configured one, or by another keyring.
+
+    Its own type because it is the one decryption error that retrying cannot fix and that the
+    operator can act on: configure the key the backup was taken with.
+    """
+
+
 MISSING_DEPENDENCY_MESSAGE = (
     "amazon-s3-encryption-client-python is not installed, but a client-side encryption key is "
     "configured. Install it with 'pip install cassandra-medusa[encryption]'"
@@ -192,13 +208,13 @@ class LocalAesKeyring(S3Keyring):
         stored = dec_materials.encryption_context_stored
         key_name = stored.get(CONTEXT_KEY_NAME)
         if key_name != KEY_NAME:
-            raise S3EncryptionClientError(
+            raise WrongKeyError(
                 'The object was not encrypted with a Medusa local key: key name {!r}, expected {!r}'.format(
                     key_name, KEY_NAME)
             )
         fingerprint = stored.get(CONTEXT_KEY_FINGERPRINT)
         if fingerprint != self.fingerprint:
-            raise S3EncryptionClientError(
+            raise WrongKeyError(
                 'The object was encrypted with a different key (fingerprint {}) than the one configured '
                 '(fingerprint {}). Configure the key the backup was taken with.'.format(fingerprint, self.fingerprint)
             )

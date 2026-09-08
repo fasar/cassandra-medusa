@@ -199,12 +199,25 @@ long as you keep the backups it protects.
 
 Encrypted and unencrypted files cannot share a differential backup chain: Medusa cannot compare a
 local file against an encrypted object without the plaintext metadata that only encrypted backups
-record. When you enable encryption on a node that already has differential backups, the next backup
-therefore re-uploads every SSTable, and previously uploaded files stay in place until they age out
-of `max_backup_count` / `backup_grace_period_in_days`.
+record, so the first backup after enabling encryption re-uploads every SSTable. Plan for it to be
+the size of a full one.
 
-Plan for that first backup to be the size of a full one, and for storage usage to roughly double
-until the old chain is purged.
+**Start the encrypted chain under a new `prefix` (or a new bucket).** Differential backups store
+every SSTable by name under a `data/` prefix that all the backups of the node share; written over
+the plaintext objects, the ciphertext would leave every earlier backup pointing at objects it cannot
+read. Medusa refuses to do that: an encrypted upload that would overwrite an object uploaded without
+encryption fails with a message saying to use a new prefix, and nothing is written. Keep the old
+prefix, without a key, for as long as you keep the old backups; storage usage roughly doubles until
+they age out of `max_backup_count` / `backup_grace_period_in_days`.
+
+The backups taken before the key stay listed, verify, and restore, **but only with a configuration
+that has no key**. With a key configured, Medusa refuses to restore an object that was uploaded
+without one, with a message saying so, rather than falling back to a plaintext download: a key
+configured means every SSTable it restores is authenticated, and a silent fallback would let anyone
+with write access to the bucket swap a ciphertext for plaintext of their choosing. To restore an old
+backup, run the restore with the same `medusa.ini` minus `key_secret_file` / `key_secret_base64`,
+pointing at the old prefix. `tests/manual/UPGRADE.md` is the protocol that checks all of this
+against backups taken by a Medusa without the feature.
 
 ## Usage
 

@@ -6,6 +6,9 @@ compares the encrypted and unencrypted paths side by side on the same data.
 
 Runner: `./run_manual_cse_tests.sh` (see *Execution* below).
 
+Two companions: `BENCHMARK.md` measures what encryption costs, and `UPGRADE.md` checks that backups
+taken by a Medusa without the feature restore on this branch and that the chain continues.
+
 ## 1. What is under test
 
 | Axis | Values |

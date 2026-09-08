@@ -33,7 +33,10 @@ from tenacity import wait_fixed
 from medusa.storage import Storage
 from medusa.storage.abstract_storage import ManifestObject
 from medusa.storage.s3_base_storage import S3BaseStorage
-from medusa.storage.s3_cse import HAS_S3EC, TAG_LENGTH, S3EncryptionClientSecurityError, WrongKeyError, key_fingerprint
+from medusa.storage.s3_cse import (
+    HAS_S3EC, TAG_LENGTH, NotEncryptedError, PlaintextObjectExistsError, S3EncryptionClientSecurityError,
+    WrongKeyError, key_fingerprint
+)
 from tests.storage.abstract_storage_test import AttributeDict
 from tests.storage.fake_s3 import FakeS3
 
@@ -202,10 +205,48 @@ class EncryptedS3StorageTest(unittest.TestCase):
             with self.assertRaisesRegex(WrongKeyError, 'different key'):
                 other.download_blobs(['prefix/nb-1-big-Data.db'], self.restore_dir)
             self.assertEqual([], os.listdir(self.restore_dir))
-            # one head, one get: tenacity did not retry a failure that retrying cannot fix
-            self.assertEqual(2, len(self.fake.requests) - requests_before)
+            # the head of __download_blob, the head that checks the object is encrypted, one get:
+            # tenacity did not retry a failure that retrying cannot fix
+            self.assertEqual(3, len(self.fake.requests) - requests_before)
         finally:
             other.disconnect()
+
+    def test_an_object_uploaded_before_encryption_is_refused_with_the_way_out(self):
+        # a backup taken by a Medusa without a key, now restored by one with a key
+        plain = self.connect(storage_config(self.tmp_dir, key_secret_base64=None))
+        try:
+            plain.upload_blobs([self.a_file('nb-1-big-Data.db', SMALL)], 'prefix')
+        finally:
+            plain.disconnect()
+        self.assertNotIn('x-amz-3', self.fake.get(BUCKET, 'prefix/nb-1-big-Data.db')['metadata'])
+
+        requests_before = len(self.fake.requests)
+        with self.assertRaisesRegex(NotEncryptedError, 'uploaded before encryption was enabled'):
+            self.storage.download_blobs(['prefix/nb-1-big-Data.db'], self.restore_dir)
+        self.assertEqual([], os.listdir(self.restore_dir))
+        # two heads, no get, no retry
+        self.assertEqual([('HEAD', 'prefix/nb-1-big-Data.db', type(None))] * 2, self.fake.requests[requests_before:])
+
+    def test_an_encrypted_upload_never_overwrites_a_plaintext_object(self):
+        # the first encrypted differential re-uploads every file under the very keys the plaintext
+        # chain uses; overwriting would strand every earlier backup
+        path = self.a_file('nb-1-big-Data.db', SMALL)
+        plain = self.connect(storage_config(self.tmp_dir, key_secret_base64=None))
+        try:
+            plain.upload_blobs([path], 'prefix')
+        finally:
+            plain.disconnect()
+        stored_before = self.fake.get(BUCKET, 'prefix/nb-1-big-Data.db')['body']
+
+        with self.assertRaisesRegex(PlaintextObjectExistsError, 'new prefix'):
+            self.storage.upload_blobs([path], 'prefix')
+        self.assertEqual(stored_before, self.fake.get(BUCKET, 'prefix/nb-1-big-Data.db')['body'])
+        self.assertEqual(1, sum(1 for m, k, _ in self.fake.requests if m == 'PUT' and k == 'prefix/nb-1-big-Data.db'))
+
+        # the same file under a new prefix, or over an encrypted object, is fine
+        self.storage.upload_blobs([path], 'prefix-cse')
+        self.storage.upload_blobs([path], 'prefix-cse')
+        self.assertIn('x-amz-3', self.fake.get(BUCKET, 'prefix-cse/nb-1-big-Data.db')['metadata'])
 
     def test_uploads_are_throttled_when_a_bandwidth_limit_is_set(self):
         throttled = self.connect(storage_config(self.tmp_dir, transfer_max_bandwidth='100MB/s'))

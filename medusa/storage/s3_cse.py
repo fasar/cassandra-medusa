@@ -61,6 +61,33 @@ class WrongKeyError(S3EncryptionClientError):
     """
 
 
+class NotEncryptedError(Exception):
+    """
+    A key is configured, but the object was uploaded without one, before encryption was turned on.
+
+    Medusa does not fall back to a plaintext download on its own: a key configured means every
+    SSTable it restores is authenticated, and silently accepting an unauthenticated object would let
+    anyone with write access to the bucket replace a ciphertext with plaintext of their choosing.
+    The operator restores such a backup without the key.
+    """
+
+
+class PlaintextObjectExistsError(Exception):
+    """
+    An encrypted upload would overwrite, under the same key, an object uploaded without encryption.
+
+    Differential backups store SSTables by name under a prefix shared by every backup of the node,
+    and the first encrypted backup re-uploads every file. Overwriting the plaintext objects in place
+    would leave the manifests of every earlier backup pointing at ciphertext they cannot read. The
+    operator starts the encrypted chain under a new prefix instead.
+    """
+
+
+# The name of the user metadata entry the S3 Encryption Client stores the wrapped data key under,
+# as head_object reports it: what tells an encrypted object from a plaintext one.
+ENCRYPTED_OBJECT_METADATA = 'x-amz-3'
+
+
 MISSING_DEPENDENCY_MESSAGE = (
     "amazon-s3-encryption-client-python is not installed, but a client-side encryption key is "
     "configured. Install it with 'pip install cassandra-medusa[encryption]'"

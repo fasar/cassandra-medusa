@@ -36,7 +36,9 @@ from medusa.storage import s3_cse
 from medusa.storage.abstract_storage import (
     AbstractStorage, AbstractBlob, AbstractBlobMetadata, ManifestObject, ObjectDoesNotExistError, is_plaintext_object
 )
-from medusa.storage.s3_cse import S3EncryptionClientSecurityError, WrongKeyError
+from medusa.storage.s3_cse import (
+    NotEncryptedError, PlaintextObjectExistsError, S3EncryptionClientSecurityError, WrongKeyError
+)
 
 
 MAX_UP_DOWN_LOAD_RETRIES = 5
@@ -348,7 +350,7 @@ class S3BaseStorage(AbstractStorage):
         return blob
 
     @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5000),
-           retry=retry_if_not_exception_type((S3EncryptionClientSecurityError, WrongKeyError)))
+           retry=retry_if_not_exception_type((S3EncryptionClientSecurityError, WrongKeyError, NotEncryptedError)))
     async def _download_blob(self, src: str, dest: str):
         # boto has a connection pool, but it does not support the asyncio API
         # so we make things ugly and submit the whole download as a task to an executor
@@ -404,6 +406,15 @@ class S3BaseStorage(AbstractStorage):
         the authentication tag is checked, on the last block; whatever went wrong, a partial or
         unauthenticated file must not be left where a restore would pick it up.
         """
+        # An object uploaded before encryption was turned on carries none of the client's metadata.
+        # The client would fail on it with a generic error; name the situation and the way out.
+        head = self.s3_client.head_object(Bucket=self.bucket_name, Key=object_key)
+        if s3_cse.ENCRYPTED_OBJECT_METADATA not in head.get('Metadata', {}):
+            raise NotEncryptedError(
+                'Object s3://{}/{} is not client-side encrypted: it was uploaded before encryption was '
+                'enabled. Restore this backup without key_secret_base64 / key_secret_file.'.format(
+                    self.bucket_name, object_key))
+
         Path(file_path).parent.mkdir(parents=True, exist_ok=True)
         try:
             response = self.s3_cse_client.get_object(Bucket=self.bucket_name, Key=object_key)
@@ -461,7 +472,8 @@ class S3BaseStorage(AbstractStorage):
         item_hash = resp['ETag'].replace('"', '')
         return AbstractBlob(key, int(resp['ContentLength']), item_hash, resp['LastModified'], None)
 
-    @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5000))
+    @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5000),
+           retry=retry_if_not_exception_type((PlaintextObjectExistsError, ValueError)))
     async def _upload_blob(self, src: str, dest: str) -> ManifestObject:
         src_path = Path(src)
 
@@ -535,6 +547,7 @@ class S3BaseStorage(AbstractStorage):
         one part of multipart_chunksize at a time, sequentially: unlike upload_file it does not
         parallelize the parts of a single file, as one cipher spans the whole object.
         """
+        self.__refuse_to_overwrite_plaintext(object_key)
         with open(src, 'rb') as f:
             reader = s3_cse.HashingReader(f)
             if os.fstat(f.fileno()).st_size < self.transfer_config.multipart_threshold:
@@ -548,6 +561,25 @@ class S3BaseStorage(AbstractStorage):
 
         blob = self.__stat_blob(object_key)
         return ManifestObject(blob.name, blob.size, blob.hash, reader.size, reader.md5_base64)
+
+    def __refuse_to_overwrite_plaintext(self, object_key: str):
+        """
+        The first encrypted backup of a node re-uploads every SSTable, and differential backups
+        store them by name under a prefix every backup of the node shares. Writing the ciphertext
+        over the plaintext object would strand every earlier backup that references it.
+        """
+        try:
+            head = self.s3_client.head_object(Bucket=self.bucket_name, Key=object_key)
+        except ClientError as e:
+            if e.response['Error']['Code'] in ('NoSuchKey', '404'):
+                return
+            raise
+        if s3_cse.ENCRYPTED_OBJECT_METADATA not in head.get('Metadata', {}):
+            raise PlaintextObjectExistsError(
+                'Object s3://{}/{} exists and is not client-side encrypted: it belongs to a backup taken before '
+                'encryption was enabled, and overwriting it would make that backup unrestorable. Start the '
+                'encrypted backups under a new prefix (or bucket), and keep the old prefix, without a key, to '
+                'restore the old ones.'.format(self.bucket_name, object_key))
 
     async def _get_object(self, object_key: t.Union[Path, str]) -> AbstractBlob:
         blob = await self._stat_blob(str(object_key))

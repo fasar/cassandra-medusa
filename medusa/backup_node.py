@@ -308,9 +308,8 @@ def backup_snapshots(storage, manifest, node_backup, snapshot, enable_md5_checks
         if node_backup.is_differential:
             logging.info(f'Listing already backed up files for node {node_backup.fqdn}')
             if storage.config.key_secret_base64:
-                # When encryption is enabled, source_MD5 and source_size in manifest file store the
-                # original file metadata before encryption, allowing us to compare local files
-                # without needing to decrypt S3 files.
+                # with a key, the storage only holds ciphertext: compare against the plaintext
+                # metadata the differential manifests carry instead of listing the bucket
                 files_in_storage = storage.get_files_from_all_differential_backups()
             else:
                 files_in_storage = storage.list_files_per_table()
@@ -403,9 +402,7 @@ def check_already_uploaded(
                 needs_backup.append(src)
                 continue
 
-            # Check for source match if available (Encrypted case)
             if item_in_storage.source_MD5:
-                # Check size and MD5
                 local_size = src.stat().st_size
                 if local_size != item_in_storage.source_size:
                     needs_reupload.append(src)
@@ -417,12 +414,10 @@ def check_already_uploaded(
                         needs_reupload.append(src)
                         continue
 
-                # Match
                 already_backed_up.append(item_in_storage)
                 continue
 
-            # If encryption is enabled, we cannot reuse unencrypted files (missing source_MD5)
-            # because the restore process expects encrypted files.
+            # a plaintext object is never reused under a key: restore would try to decrypt it
             if storage.config.key_secret_base64:
                 needs_reupload.append(src)
                 continue
@@ -439,15 +434,8 @@ def check_already_uploaded(
 
 
 def make_manifest_object(fqdn, snapshot_path, manifest_objects, storage, is_differential=False):
-    # source_MD5 and source_size describe the file *before* encryption. Only differential backups
-    # read them back - check_already_uploaded() uses them to tell whether a local file is already
-    # in storage without decrypting anything - so only differential backups need to write them.
-    #
-    # Writing them anywhere else costs something: source_MD5 is a hash of the plaintext, stored in
-    # the clear next to the ciphertext, which hands anyone with read access to the bucket a way to
-    # confirm a guessed plaintext without the key. And for an unencrypted backup they would be two
-    # null fields added to the manifest of every existing deployment, for nothing - the manifest is
-    # a public artifact, read by medusa verify, by restore, and by tooling outside this repository.
+    # source_* are only read back by differential backups, and source_MD5 is a hash of the plaintext
+    # stored in the clear: write them only where they are needed
     describe_source = is_differential and bool(storage.config.key_secret_base64)
 
     def describe(manifest_object):

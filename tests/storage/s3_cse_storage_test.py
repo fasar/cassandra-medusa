@@ -14,8 +14,7 @@
 # limitations under the License.
 
 """
-S3BaseStorage with client-side encryption, end to end against the in-memory S3: real boto3
-clients, the real S3 Encryption Client, and Medusa's own upload and download paths.
+S3BaseStorage with client-side encryption, end to end against the in-memory S3.
 """
 
 import base64
@@ -205,8 +204,7 @@ class EncryptedS3StorageTest(unittest.TestCase):
             with self.assertRaisesRegex(WrongKeyError, 'different key'):
                 other.download_blobs(['prefix/nb-1-big-Data.db'], self.restore_dir)
             self.assertEqual([], os.listdir(self.restore_dir))
-            # the head of __download_blob, the head that checks the object is encrypted, one get:
-            # tenacity did not retry a failure that retrying cannot fix
+            # two heads and one get: tenacity did not retry a failure that retrying cannot fix
             self.assertEqual(3, len(self.fake.requests) - requests_before)
         finally:
             other.disconnect()
@@ -228,8 +226,7 @@ class EncryptedS3StorageTest(unittest.TestCase):
         self.assertEqual([('HEAD', 'prefix/nb-1-big-Data.db', type(None))] * 2, self.fake.requests[requests_before:])
 
     def test_an_encrypted_upload_never_overwrites_a_plaintext_object(self):
-        # the first encrypted differential re-uploads every file under the very keys the plaintext
-        # chain uses; overwriting would strand every earlier backup
+        # the first encrypted differential re-uploads every file under the keys the plaintext chain uses
         path = self.a_file('nb-1-big-Data.db', SMALL)
         plain = self.connect(storage_config(self.tmp_dir, key_secret_base64=None))
         try:
@@ -277,8 +274,7 @@ class EncryptedS3StorageTest(unittest.TestCase):
             classy.disconnect()
 
     def test_a_retried_upload_starts_over_from_the_first_byte(self):
-        # tenacity retries _upload_blob as a whole; the file must be reopened and re-hashed on the
-        # second attempt, otherwise the manifest would describe a truncated plaintext
+        # a retry must reopen and re-hash the file, or the manifest describes a truncated plaintext
         path = self.a_file('nb-1-big-Data.db', SMALL)
         attempts = []
         original = self.storage._S3BaseStorage__upload_encrypted_file
@@ -291,8 +287,7 @@ class EncryptedS3StorageTest(unittest.TestCase):
                 raise ConnectionError('simulated network failure')
             return original(src, object_key, extra_args)
 
-        # _upload_blob is a coroutine, so its tenacity decorator sleeps with asyncio.sleep for
-        # thousands of seconds between attempts; shorten the wait for the duration of the test
+        # the coroutine's tenacity decorator sleeps with asyncio.sleep for thousands of seconds
         retrying = S3BaseStorage._upload_blob.retry
         original_wait = retrying.wait
         retrying.wait = wait_fixed(0)

@@ -118,8 +118,8 @@ class S3BaseStorage(AbstractStorage):
             logging.debug("Using SSE-C key *****")
             self.sse_c_key = base64.b64decode(config.sse_c_key)
 
-        # Client-side encryption. The key is decoded here, not on first use, so that a bad key or
-        # a missing library fails when the storage is built rather than in the middle of a backup.
+        # the key is decoded here, not on first use, so that a bad key or a missing library fails
+        # when the storage is built rather than in the middle of a backup
         self.encryption_key = None
         key_secret_base64 = self._optional_setting(config, 'key_secret_base64')
         if key_secret_base64:
@@ -167,10 +167,8 @@ class S3BaseStorage(AbstractStorage):
         self.s3_client = self._make_boto_client(boto_config)
 
         if self.encryption_key is not None:
-            # The S3 Encryption Client works by registering event handlers on the boto3 client it
-            # wraps, which then encrypts every put and decrypts every get. Backup metadata stays
-            # in plaintext and the listing, head and delete calls must see the ciphertext as it
-            # is, so the encrypting client gets a boto3 client of its own.
+            # the encryption client registers hooks on the boto3 client it wraps: keep a plain one
+            # for listing, head, delete and the plaintext metadata
             if self.transfer_config.max_bandwidth:
                 self.bandwidth_limiter = s3_cse.make_bandwidth_limiter(self.transfer_config.max_bandwidth)
             self.s3_cse_client = s3_cse.build_encryption_client(
@@ -204,7 +202,7 @@ class S3BaseStorage(AbstractStorage):
 
     @staticmethod
     def _optional_setting(config, name):
-        # The config is a StorageConfig in production, but tests hand in dicts and mocks
+        # the config is a StorageConfig in production, but tests hand in dicts and mocks
         try:
             value = getattr(config, name)
         except (AttributeError, KeyError):
@@ -399,15 +397,11 @@ class S3BaseStorage(AbstractStorage):
 
     def __download_encrypted_file(self, object_key: str, file_path: str):
         """
-        get_object through the encrypting client, streamed to disk block by block.
-
-        download_file cannot be used: it fetches byte ranges in parallel, and a range of ciphertext
-        cannot be decrypted on its own. With delayed authentication the plaintext is written before
-        the authentication tag is checked, on the last block; whatever went wrong, a partial or
-        unauthenticated file must not be left where a restore would pick it up.
+        Stream get_object to disk. download_file cannot be used (ranged GETs do not decrypt), and
+        with delayed authentication the plaintext is written before the tag is checked, so a failed
+        download must not leave a file behind.
         """
-        # An object uploaded before encryption was turned on carries none of the client's metadata.
-        # The client would fail on it with a generic error; name the situation and the way out.
+        # an object uploaded before encryption was turned on: name the situation and the way out
         head = self.s3_client.head_object(Bucket=self.bucket_name, Key=object_key)
         if s3_cse.ENCRYPTED_OBJECT_METADATA not in head.get('Metadata', {}):
             raise NotEncryptedError(
@@ -536,16 +530,10 @@ class S3BaseStorage(AbstractStorage):
 
     def __upload_encrypted_file(self, src: str, object_key: str, extra_args: t.Dict[str, str]) -> ManifestObject:
         """
-        Upload one SSTable component through the encrypting client.
-
-        The file is opened here, in the executor thread, so that every retry of _upload_blob starts
-        again from the first byte with a fresh hash. The size and MD5 of the plaintext are taken
-        from the same pass the client reads, which is the only time the plaintext goes by.
-
-        Below the multipart threshold the client reads the whole body into memory, which is what
-        boto3's upload_file does for a plaintext file of that size too. Above it, the client uploads
-        one part of multipart_chunksize at a time, sequentially: unlike upload_file it does not
-        parallelize the parts of a single file, as one cipher spans the whole object.
+        Upload one SSTable through the encrypting client. The file is opened here, in the executor,
+        so that a retry restarts from the first byte with a fresh hash. Below the multipart
+        threshold the client holds the whole body in memory, as upload_file does; above it, one
+        part at a time.
         """
         self.__refuse_to_overwrite_plaintext(object_key)
         with open(src, 'rb') as f:
@@ -564,9 +552,8 @@ class S3BaseStorage(AbstractStorage):
 
     def __refuse_to_overwrite_plaintext(self, object_key: str):
         """
-        The first encrypted backup of a node re-uploads every SSTable, and differential backups
-        store them by name under a prefix every backup of the node shares. Writing the ciphertext
-        over the plaintext object would strand every earlier backup that references it.
+        Differential backups store SSTables by name under a shared prefix: writing ciphertext over
+        a plaintext object would strand every earlier backup that references it.
         """
         try:
             head = self.s3_client.head_object(Bucket=self.bucket_name, Key=object_key)

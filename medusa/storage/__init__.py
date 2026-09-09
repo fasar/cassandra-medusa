@@ -83,14 +83,11 @@ class Storage(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.storage_driver.disconnect()
 
-    # Client-side encryption is implemented with the Amazon S3 Encryption Client, so it exists for
-    # the S3 providers and for nothing else. s3_rgw, ibm_storage and s3_compatible are S3 APIs
-    # behind other names; the AWS regions are the providers whose name starts with s3.
+    # client-side encryption is built on the S3 Encryption Client, so S3 providers only
     ENCRYPTION_CAPABLE_PROVIDERS = ('s3_rgw', 's3_compatible', 'ibm_storage')
 
     def _check_encryption_settings(self):
-        # Test doubles stand in for the config with plain dicts and mocks, so read the key the
-        # tolerant way rather than assuming a StorageConfig
+        # tests hand in dicts and mocks for the config
         try:
             key = self._config.key_secret_base64
         except (AttributeError, KeyError):
@@ -104,9 +101,8 @@ class Storage(object):
                 'providers, not with storage_provider = {}'.format(self._config.storage_provider)
             )
         if self._config.sse_c_key:
-            # The S3 Encryption Client forwards extra arguments to the first request of a multipart
-            # upload only, and SSE-C needs its key on every part. Rather than fail halfway through
-            # an upload, refuse a combination that would anyway encrypt the ciphertext twice.
+            # the encryption client only forwards extra args to the first multipart request, and
+            # SSE-C needs its key on every part
             raise ValueError(
                 'sse_c_key cannot be combined with client-side encryption. Use kms_id for server-side '
                 'encryption on top of it, or drop one of the two.'
@@ -547,11 +543,9 @@ class Storage(object):
     def get_files_from_all_differential_backups(self) -> t.Dict[str, t.Dict[str, t.Dict[str, ManifestObject]]]:
         files_by_keyspace_and_table = collections.defaultdict(lambda: collections.defaultdict(dict))
 
-        # List all backups (sorted by date)
         backups = list(self.list_node_backups(fqdn=self.config.fqdn))
 
-        # Filter backups to only include differential backups.
-        # Differential backups use a shared data pool and should not link to Full backups (which are isolated).
+        # differential backups share a data pool; full backups are isolated and never linked to
         relevant_backups = [b for b in backups if b.is_differential]
 
         for backup in relevant_backups:
@@ -570,18 +564,14 @@ class Storage(object):
                         source_md5 = obj.get('source_MD5')
 
                         p = pathlib.Path(path)
-                        # Filename from path
                         filename = p.name
-
-                        # Construct ManifestObject
                         mo = ManifestObject(path, size, md5, source_size, source_md5)
 
-                        # Derive keyspace and table using the same logic as list_files_per_table
                         try:
                             ks, table = Storage.sanitize_keyspace_and_table_name(p)
                             files_by_keyspace_and_table[ks][table][filename] = mo
                         except RuntimeError:
-                            # Skip files that don't match SSTable path structure (e.g. if path is weird)
+                            # not shaped like an SSTable path
                             logging.debug(f"Skipping {path} from manifest as it doesn't look like an SSTable")
 
             except Exception as e:

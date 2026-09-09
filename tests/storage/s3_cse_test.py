@@ -101,8 +101,7 @@ class HashingReaderTest(unittest.TestCase):
         self.assertEqual(5, reader.size)
 
     def test_matches_the_manifest_md5_of_the_storage_layer(self):
-        # check_already_uploaded() compares source_MD5 to AbstractStorage.generate_md5_hash(), so
-        # the two encodings must agree, down to the absence of a trailing newline
+        # check_already_uploaded() compares source_MD5 to generate_md5_hash(): same encoding, no newline
         from medusa.storage.abstract_storage import AbstractStorage
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False) as f:
@@ -127,8 +126,8 @@ class LocalAesKeyringTest(unittest.TestCase):
         return (keyring or self.keyring).on_encrypt(EncryptionMaterials(encryption_context={}))
 
     def decryption_materials(self, enc, context=None):
-        # What the client rebuilds from the object metadata: the wrapped key, and the context it
-        # stored as JSON. The wrap algorithm label is what 4.0.0 writes for every keyring.
+        # what the client rebuilds from the object metadata; the wrap label is what it writes for
+        # every keyring
         edk = enc.encrypted_data_key
         edk.key_provider_info = 'kms+context'
         stored = json.loads(json.dumps(enc.encryption_context)) if context is None else context
@@ -175,8 +174,8 @@ class LocalAesKeyringTest(unittest.TestCase):
             self.keyring.on_decrypt(self.decryption_materials(enc, context))
 
     def test_an_edited_context_breaks_the_wrap(self):
-        # The context is authenticated by the wrap, so a fingerprint copied from another object
-        # cannot be pasted in to get past the fingerprint check
+        # the context is authenticated by the wrap: a fingerprint pasted from another object does not
+        # get past the fingerprint check
         enc = self.encrypt()
         context = dict(enc.encryption_context)
         context['medusa:extra'] = 'edited'
@@ -201,10 +200,7 @@ class LocalAesKeyringTest(unittest.TestCase):
 
 @unittest.skipIf(not HAS_S3EC, SKIP_REASON)
 class EncryptionClientRoundTripTest(unittest.TestCase):
-    """
-    put_object / upload_fileobj / get_object through the real S3 Encryption Client, against the
-    in-memory S3: the pipelines, the metadata format, and the streaming decryption are all real.
-    """
+    # put_object / upload_fileobj / get_object through the real encryption client and the in-memory S3
 
     def setUp(self):
         self.key = a_key()
@@ -245,7 +241,7 @@ class EncryptionClientRoundTripTest(unittest.TestCase):
         self.client.put_object(Bucket=BUCKET, Key='obj', Body=data)
         body = self.client.get_object(Bucket=BUCKET, Key='obj')['Body']
         first = body.read(1000)
-        # Delayed authentication: plaintext is released before the whole ciphertext was consumed
+        # delayed authentication: plaintext is released before the whole ciphertext was consumed
         self.assertEqual(data[:len(first)], first)
         self.assertLess(body.tell(), len(data))
 
@@ -299,9 +295,8 @@ class EncryptionClientRoundTripTest(unittest.TestCase):
             self.client.get_object(Bucket=BUCKET, Key='nope')
 
     def test_only_the_bytes_sent_count_against_the_bandwidth_limit(self):
-        # botocore reads the body for the request checksum and again for the signature before it
-        # sends it. Wrapped too early, the limiter charged those reads too and a 1 MB/s limit
-        # delivered a third of that. 3 MB at 1 MB/s: about three seconds, not six or nine.
+        # botocore reads the body for the checksum and the signature before sending it; wrapped too
+        # early the limiter charges those reads too. 3 MB at 1 MB/s: about three seconds, not six or nine
         import time
         limiter = make_bandwidth_limiter(1024 * 1024)
         client = self.new_client(self.key, bandwidth_limiter=limiter)

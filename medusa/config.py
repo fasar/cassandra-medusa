@@ -282,10 +282,8 @@ def _handle_env_vars(config):
         if config_property_upper in os.environ:
             config.set('cassandra', config_property, os.environ[config_property_upper])
 
-    # The client-side encryption key protects every backup, so it should not have to be written
-    # into medusa.ini, which is typically templated by configuration management and readable more
-    # widely than the key deserves. Every other Medusa secret already has an indirection
-    # (key_file for the storage credentials); these give the encryption key one too.
+    # the key protects every backup: let it come from a file or the environment rather than
+    # medusa.ini, like key_file does for the storage credentials
     for config_property in ['key_secret_base64', 'key_secret_file']:
         config_property_upper = _env_var_name(config_property)
         if config_property_upper in os.environ:

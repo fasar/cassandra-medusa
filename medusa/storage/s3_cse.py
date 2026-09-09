@@ -14,13 +14,9 @@
 # limitations under the License.
 
 """
-Client-side encryption of S3 objects with the Amazon S3 Encryption Client (S3EC) and a local key.
-
-The S3 Encryption Client does the cryptography: it encrypts each object under a fresh data key,
-commits to that key, and stores the wrapped data key in the object's user metadata. What it does
-not do is wrap the data key with anything but AWS KMS. Medusa wants the key in a local file, so
-this module provides the keyring the client lacks, plus the glue the storage layer needs: key
-decoding, a read-through MD5 wrapper, and the bandwidth limiting the client does not offer.
+Client-side encryption of S3 objects with the Amazon S3 Encryption Client and a local AES key.
+The client only ships a KMS keyring: this module provides the local-key keyring, the plaintext
+MD5 differential backups need, and the bandwidth limiting the client does not offer.
 """
 
 import base64
@@ -46,45 +42,26 @@ except ImportError:
     S3Keyring = object
 
     class S3EncryptionClientError(Exception):
-        """Stand-in so that callers can name the client's errors whether or not it is installed."""
+        """stand-in so that callers can name the client's errors without the client installed"""
 
     class S3EncryptionClientSecurityError(Exception):
-        """Stand-in so that callers can name the client's errors whether or not it is installed."""
+        """stand-in so that callers can name the client's errors without the client installed"""
 
 
 class WrongKeyError(S3EncryptionClientError):
-    """
-    The object was encrypted by a key other than the configured one, or by another keyring.
-
-    Its own type because it is the one decryption error that retrying cannot fix and that the
-    operator can act on: configure the key the backup was taken with.
-    """
+    """The object was encrypted with another key: retrying cannot fix it, the operator can."""
 
 
 class NotEncryptedError(Exception):
-    """
-    A key is configured, but the object was uploaded without one, before encryption was turned on.
-
-    Medusa does not fall back to a plaintext download on its own: a key configured means every
-    SSTable it restores is authenticated, and silently accepting an unauthenticated object would let
-    anyone with write access to the bucket replace a ciphertext with plaintext of their choosing.
-    The operator restores such a backup without the key.
-    """
+    """A key is configured but the object was uploaded without one; restore it without the key."""
 
 
 class PlaintextObjectExistsError(Exception):
-    """
-    An encrypted upload would overwrite, under the same key, an object uploaded without encryption.
-
-    Differential backups store SSTables by name under a prefix shared by every backup of the node,
-    and the first encrypted backup re-uploads every file. Overwriting the plaintext objects in place
-    would leave the manifests of every earlier backup pointing at ciphertext they cannot read. The
-    operator starts the encrypted chain under a new prefix instead.
-    """
+    """An encrypted upload would overwrite a plaintext object that earlier backups still reference."""
 
 
-# The name of the user metadata entry the S3 Encryption Client stores the wrapped data key under,
-# as head_object reports it: what tells an encrypted object from a plaintext one.
+# the metadata entry the client stores the wrapped data key under: what tells an encrypted object
+# from a plaintext one
 ENCRYPTED_OBJECT_METADATA = 'x-amz-3'
 
 
@@ -95,37 +72,24 @@ MISSING_DEPENDENCY_MESSAGE = (
 
 KEY_LENGTH = 32
 
-# --- On-disk format -------------------------------------------------------------------------
-# Everything below is written into, or checked against, the metadata of every encrypted object.
-# Changing any of it strands every backup taken before the change.
-
-# Recorded in the encryption context of every object, and required on decrypt: it says which
-# keyring wrapped the data key, so that an object written by a KMS keyring - or by a future
-# Medusa keyring - fails with a clear message rather than a bad tag.
+# everything below is written into the metadata of every encrypted object and checked on decrypt:
+# changing any of it makes the existing backups unreadable
 KEY_NAME = 'medusa-backup/raw-aes-key'
 CONTEXT_KEY_NAME = 'medusa:key-name'
-# The first bytes of SHA-256 of the key, hex. Not secret, and the only way to tell "wrong key"
-# apart from "tampered object" at restore time.
+# first bytes of sha256(key), hex: tells "wrong key" from "tampered object" at restore time
 CONTEXT_KEY_FINGERPRINT = 'medusa:key-fingerprint'
 FINGERPRINT_LENGTH = 8
-
 KEY_PROVIDER_ID = b'S3Keyring'
 WRAP_ALGORITHM = 'AES/GCM'
-# S3EC 4.0.0 labels every wrapped data key "kms+context" in the object metadata, whatever
-# keyring produced it, and hands that label back on decrypt. Accept it alongside the honest one,
-# so that objects written by 4.0.0 stay readable once the client labels them properly.
+# the client labels every wrapped key "kms+context" whatever the keyring; accept both labels
 ACCEPTED_WRAP_ALGORITHMS = (WRAP_ALGORITHM, 'kms+context')
 NONCE_LENGTH = 12
 TAG_LENGTH = 16
-# ---------------------------------------------------------------------------------------------
 
-# AES-GCM authenticates at most 2^39 - 256 bits under one key and nonce, and the client encrypts
-# a whole object under a single pair, multipart or not. It does not check the limit itself
-# ("planned for a future release"), so Medusa does before uploading.
+# AES-GCM limit for one key/nonce pair, which the client uses for a whole object and does not check
 MAX_OBJECT_SIZE = (2 ** 39 - 256) // 8
 
-# Block size used to copy a decrypted stream to disk. Each read() is one HTTP read plus one
-# AES-GCM update, so 1 MiB keeps the Python-level call count low without holding much in memory.
+# one read() is one HTTP read plus one AES-GCM update, so keep them large
 DOWNLOAD_BLOCK_SIZE = 1024 * 1024
 
 
@@ -135,13 +99,7 @@ def require_s3ec():
 
 
 def decode_key(key_secret_base64) -> bytes:
-    """
-    The configured key: base64, decoding to exactly 32 bytes.
-
-    Validated strictly, and with messages that name the setting, because a key that is off by a
-    character would otherwise surface as an unhelpful error from deep inside the client on the
-    first upload.
-    """
+    """Decode the configured key: strict base64, exactly 32 bytes, with errors naming the setting."""
     if not key_secret_base64:
         raise ValueError('Encryption key is not provided')
     try:
@@ -173,23 +131,14 @@ def check_object_size(path, size: int):
 
 
 def _canonical_context(context: dict) -> bytes:
-    """
-    The encryption context as additional authenticated data for the key wrap.
-
-    The client stores the context as JSON in the object metadata and parses it back on decrypt,
-    so the bytes must not depend on dict ordering or on the client's JSON formatting.
-    """
+    """The encryption context as AAD for the key wrap, independent of dict order and JSON formatting."""
     return json.dumps(context, sort_keys=True, separators=(',', ':')).encode('utf-8')
 
 
 class LocalAesKeyring(S3Keyring):
     """
-    Wraps each object's data key with a raw AES-256 key held in memory.
-
-    Immutable once built, and holds nothing but the key and its fingerprint, so one instance can
-    serve every upload and download thread of a storage. The nonce for each wrap comes from
-    os.urandom, and the wrap is authenticated over the whole encryption context, so the metadata
-    that carries the key name and fingerprint cannot be edited without invalidating the wrap.
+    Wraps each object's data key with a raw AES-256 key held in memory. Immutable, so one instance
+    serves every thread; the wrap is authenticated over the whole encryption context.
     """
 
     def __init__(self, key_bytes: bytes):
@@ -200,7 +149,7 @@ class LocalAesKeyring(S3Keyring):
         self.fingerprint = key_fingerprint(self._key)
 
     def __repr__(self):
-        # Never let the key into a log line or a traceback
+        # never let the key into a log line or a traceback
         return 'LocalAesKeyring(fingerprint={})'.format(self.fingerprint)
 
     def on_encrypt(self, enc_materials):
@@ -261,13 +210,9 @@ class LocalAesKeyring(S3Keyring):
 
 class HashingReader:
     """
-    Read-through wrapper that computes the MD5 and size of everything read from a file.
-
-    The S3 Encryption Client reports the size and ETag of the ciphertext only, and the plaintext is
-    what the next differential backup compares its local files against. Wrapping the file the
-    client reads from yields both in the same pass. The MD5 is a checksum, not a security
-    primitive, hence usedforsecurity=False; it is rendered base64 like every other MD5 Medusa
-    writes into a manifest.
+    Read-through wrapper that computes the MD5 and size of what is read. The client only reports
+    the ciphertext, and differential backups compare local files to the plaintext MD5, base64 like
+    the other MD5s in the manifest.
     """
 
     def __init__(self, fileobj):
@@ -297,27 +242,20 @@ class HashingReader:
 
 
 def make_bandwidth_limiter(max_bandwidth) -> BandwidthLimiter:
-    """
-    The same limiter s3transfer builds for TransferConfig(max_bandwidth=...): one leaky bucket,
-    shared by every stream it wraps, so uploads and downloads from every thread share the budget.
-    """
+    """The limiter s3transfer builds for TransferConfig(max_bandwidth): one bucket shared by every stream."""
     return BandwidthLimiter(LeakyBucket(int(max_bandwidth)))
 
 
 def limit_bandwidth(limiter: BandwidthLimiter, stream):
-    """Wrap a stream so that reads from it consume the limiter's budget."""
+    """Wrap a stream so that reading it consumes the limiter's budget."""
     return limiter.get_bandwith_limited_stream(stream, TransferCoordinator())
 
 
 class _LimitUploadBandwidth:
     """
-    A request-created handler that throttles the ciphertext on its way out.
-
-    The client has no bandwidth setting. It replaces the request body with the ciphertext in its
-    own before-call handler; this one wraps that ciphertext in the stream s3transfer itself uses to
-    enforce max_bandwidth. It runs at request-created, after botocore has read the body for the
-    request checksum and for the signature, so that only the bytes going out on the wire count
-    against the limit: wrapping earlier made a 50 MB/s limit deliver 15 MB/s.
+    Throttles the ciphertext on its way out, with the stream s3transfer uses for max_bandwidth.
+    Registered at request-created, after the signer: botocore reads the body for the checksum and
+    the signature before sending it, and only the bytes going out on the wire must count.
     """
 
     def __init__(self, limiter: BandwidthLimiter):
@@ -336,15 +274,9 @@ class _LimitUploadBandwidth:
 
 def build_encryption_client(s3_client, key_bytes: bytes, bandwidth_limiter: BandwidthLimiter = None):
     """
-    Wrap a boto3 S3 client so that put_object/upload_fileobj encrypt and get_object decrypts.
-
-    The wrapping registers event handlers on the boto3 client itself, so that client must not be
-    used for plaintext objects afterwards: give this function a client of its own.
-
-    Delayed authentication is what makes get_object stream: without it the client reads the whole
-    object into memory before releasing a byte. The price is that plaintext reaches the caller
-    before the authentication tag is checked; the check happens on the last read and raises, so
-    callers must treat the output as unverified until the stream is exhausted.
+    Wrap a boto3 client so that put_object/upload_fileobj encrypt and get_object decrypts.
+    The wrapper registers handlers on the client, so give it a client of its own. Delayed
+    authentication is what makes get_object stream; the tag is checked on the last read.
     """
     require_s3ec()
     keyring = LocalAesKeyring(key_bytes)
@@ -355,9 +287,8 @@ def build_encryption_client(s3_client, key_bytes: bytes, bandwidth_limiter: Band
     )
     client = S3EncryptionClient(s3_client, config)
     if bandwidth_limiter is not None:
-        # On the same event as the signer, and after it: botocore runs the handlers of the more
-        # specific request-created.s3.PutObject before those of request-created.s3, so a handler
-        # registered on the operation's own event would still be ahead of the signature.
+        # botocore runs request-created.s3.PutObject handlers before request-created.s3 ones, where
+        # the signer lives: register last on the general event to run after the signature
         s3_client.meta.events.register_last('request-created.s3', _LimitUploadBandwidth(bandwidth_limiter),
                                             unique_id='medusa-cse-bandwidth')
     return client

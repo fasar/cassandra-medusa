@@ -29,8 +29,7 @@ class GetAllManifestsTest(unittest.TestCase):
         self.storage = Storage(config=self.config)
 
     def test_get_files_from_all_differential_backups(self):
-        # Create dummy backups
-        # Full Backup (Should be ignored by differential aggregation)
+        # a full backup, which differential aggregation must ignore
         backup1 = MagicMock()
         backup1.name = "backup1"
         backup1.is_differential = False
@@ -50,7 +49,7 @@ class GetAllManifestsTest(unittest.TestCase):
             }
         ])
 
-        # Differential Backup 1
+        # differential backup 1
         backup2 = MagicMock()
         backup2.name = "backup2"
         backup2.is_differential = True
@@ -70,7 +69,7 @@ class GetAllManifestsTest(unittest.TestCase):
             }
         ])
 
-        # Differential Backup 2
+        # differential backup 2
         backup3 = MagicMock()
         backup3.name = "backup3"
         backup3.is_differential = True
@@ -80,7 +79,7 @@ class GetAllManifestsTest(unittest.TestCase):
                 "columnfamily": "cf1",
                 "objects": [
                     {
-                        # Update to f_diff1.db
+                        # f_diff1.db again, newer
                         "path": "prefix/test-fqdn/data/ks1/cf1/f_diff1.db",
                         "size": 111,
                         "MD5": "md5_2_updated",
@@ -98,28 +97,25 @@ class GetAllManifestsTest(unittest.TestCase):
             }
         ])
 
-        # Mock list_node_backups to return these in chronological order
+        # in chronological order
         self.storage.list_node_backups = MagicMock(return_value=[backup1, backup2, backup3])
 
-        # Call the method
         files = self.storage.get_files_from_all_differential_backups()
 
-        # Check structure: files[ks][table][filename]
         self.assertIn("ks1", files)
         self.assertIn("cf1", files["ks1"])
 
         cf_files = files["ks1"]["cf1"]
 
-        # Verify f_full.db from backup1 (Full) is NOT included
+        # the full backup is not aggregated
         self.assertNotIn("f_full.db", cf_files)
 
-        # Verify f_diff1.db is from backup3 (latest)
+        # the latest differential wins
         self.assertIn("f_diff1.db", cf_files)
         f_diff1 = cf_files["f_diff1.db"]
         self.assertEqual(f_diff1.source_MD5, "src_md5_2_updated")
         self.assertEqual(f_diff1.path, "prefix/test-fqdn/data/ks1/cf1/f_diff1.db")
 
-        # Verify f_diff2.db is included
         self.assertIn("f_diff2.db", cf_files)
         f_diff2 = cf_files["f_diff2.db"]
         self.assertEqual(f_diff2.source_MD5, "src_md5_3")

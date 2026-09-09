@@ -46,13 +46,8 @@ PLAINTEXT_FILES_REGEX = re.compile(
 
 def is_plaintext_object(name: str) -> bool:
     """
-    Whether an object is stored unencrypted even when client-side encryption is on.
-
-    Upload and download have to agree on this, otherwise a file is written one way and read the
-    other, which corrupts it silently. This predicate gives both sides a single place to consult.
-
-    Matching is on the base name only: SSTable components (Data.db, Index.db, Digest.crc32, ...)
-    never carry any of these words, so a user table named e.g. "schema_history" is unaffected.
+    Whether an object stays plaintext under client-side encryption. Upload and download must agree
+    on this; matched on the base name only, so a table named e.g. schema_history is unaffected.
     """
     return bool(PLAINTEXT_FILES_REGEX.search(name))
 
@@ -62,10 +57,8 @@ AbstractBlob = collections.namedtuple('AbstractBlob', ['name', 'size', 'hash', '
 AbstractBlobMetadata = collections.namedtuple('AbstractBlobMetadata',
                                               ['name', 'sse_enabled', 'sse_key_id', 'sse_customer_key_md5'])
 
-# source_size and source_MD5 describe the file before client-side encryption, and are only
-# written for encrypted differential backups; everywhere else they stay None and are left out of
-# the manifest. Without them a differential backup could not compare a local file to an encrypted
-# object, whose size and ETag are those of the ciphertext.
+# source_size / source_MD5 describe the file before encryption; only encrypted differential
+# backups write them, everywhere else they stay None and out of the manifest
 ManifestObject = collections.namedtuple(
     'ManifestObject',
     ['path', 'size', 'MD5', 'source_size', 'source_MD5'],
@@ -89,10 +82,7 @@ class AbstractStorage(abc.ABC):
 
     @property
     def encryption_enabled(self) -> bool:
-        """
-        Client-side encryption is on when a key is configured, and only then. There is no separate
-        switch: a key that is set but not used would be the more surprising state.
-        """
+        """Client-side encryption is on when a key is configured; there is no separate switch."""
         try:
             key = self.config.key_secret_base64
         except (AttributeError, KeyError):

@@ -14,15 +14,10 @@
 # limitations under the License.
 
 """
-An in-memory S3 that answers a real boto3 client at the HTTP layer.
-
-It registers as a before-send handler, the last thing botocore runs before opening a socket, so
-everything above it is genuine: serialization, the S3 Encryption Client's before-call and
-after-call hooks, checksums, response parsing. That is what makes it possible to exercise
-encryption end to end - put, multipart, get, metadata round trip - without a MinIO.
-
-Only what Medusa uses is implemented: put/get/head/delete object, list_objects_v2, and the
-multipart upload calls, with path-style URLs.
+An in-memory S3 that answers a real boto3 client at the HTTP layer. It registers as a before-send
+handler, the last thing botocore runs before opening a socket, so serialization, the encryption
+client's hooks, checksums and response parsing are all real. Only what Medusa uses is implemented:
+put/get/head/delete, list_objects_v2 and multipart uploads, with path-style URLs.
 """
 
 import datetime
@@ -41,7 +36,7 @@ from urllib3.response import HTTPResponse
 
 S3_XMLNS = 'http://s3.amazonaws.com/doc/2006-03-01/'
 METADATA_PREFIX = 'x-amz-meta-'
-# Request headers other than metadata that tests assert on, kept per object as sent.
+# request headers other than metadata that tests assert on, kept per object as sent
 RECORDED_HEADERS = (
     'x-amz-storage-class', 'x-amz-server-side-encryption', 'x-amz-server-side-encryption-aws-kms-key-id'
 )
@@ -64,15 +59,13 @@ class FakeS3:
     def __init__(self):
         self.objects = {}
         self.uploads = {}
-        # (method, key, type of the request body) for every request, so tests can assert on
-        # which operations ran and on what was handed to the transport
+        # (method, key, type of the request body) for every request, for the assertions on which
+        # operations ran and what was handed to the transport
         self.requests = []
 
     def attach(self, client):
         client.meta.events.register('before-send.s3', self)
         return self
-
-    # --- helpers for tests -------------------------------------------------------------------
 
     def get(self, bucket, key):
         return self.objects[(bucket, key)]
@@ -89,8 +82,6 @@ class FakeS3:
             'last_modified': datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
         }
 
-    # --- the handler -------------------------------------------------------------------------
-
     def __call__(self, request, **kwargs):
         url = urlparse(request.url)
         path = unquote(url.path).lstrip('/')
@@ -99,8 +90,7 @@ class FakeS3:
         body = request.body
         body_type = type(body)
         if body is not None and hasattr(body, 'read'):
-            # botocore streams bodies in blocks; so does this, so that a stream whose read()
-            # requires a size (s3transfer's bandwidth limited stream) works here too
+            # read in blocks like botocore does: a bandwidth limited stream needs a size on read()
             chunks = []
             while True:
                 chunk = body.read(1024 * 1024)

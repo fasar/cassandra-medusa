@@ -178,11 +178,7 @@ class BackupNodeTest(unittest.TestCase):
 
 
 class MakeManifestObjectTest(unittest.TestCase):
-    """
-    The manifest is a public artifact: medusa verify, restore and third-party tooling read it.
-    source_MD5 / source_size describe the file before encryption and only mean something for an
-    encrypted backup, so they must not appear at all in the manifest of a plaintext one.
-    """
+    # the manifest is read by verify, restore and outside tooling: no source_* fields without a key
 
     def _storage(self, key_secret_base64):
         storage = MagicMock()
@@ -207,10 +203,7 @@ class MakeManifestObjectTest(unittest.TestCase):
         self.assertEqual(sorted(entry.keys()), ['MD5', 'path', 'size'])
 
     def test_full_encrypted_backup_does_not_publish_the_plaintext_hash(self):
-        """
-        source_MD5 is a hash of the plaintext stored in the clear next to the ciphertext. Only
-        differential backups read it back, so a full backup must not write it.
-        """
+        # a full backup never reads source_MD5 back, so it must not write a plaintext hash for nothing
         entry = self._manifest(
             'a-key', ManifestObject('node1/data/medusa/test/f.db', 120, 'enc-md5', 100, 'src-md5'),
             is_differential=False
@@ -232,14 +225,8 @@ class MakeManifestObjectTest(unittest.TestCase):
 
 
 class CheckAlreadyUploadedEncryptedTest(unittest.TestCase):
-    """
-    The differential-reuse decision under client-side encryption.
-
-    Without the key Medusa cannot compare a local file against the encrypted object in storage, so
-    it compares against the plaintext metadata the manifest carries instead - source_size and
-    source_MD5. Getting this wrong does not fail anything visibly: it produces a differential backup
-    that believes it holds a file it does not, and that only surfaces at restore time.
-    """
+    # getting the reuse decision wrong produces a differential backup that believes it holds a file
+    # it does not, and only restore notices
 
     KEYSPACE = 'keyspace1'
     TABLE = 'table1-cfid'
@@ -247,8 +234,7 @@ class CheckAlreadyUploadedEncryptedTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
-        # check_already_uploaded() stats and hashes the local file, so it has to exist on disk, and
-        # sanitize_keyspace_and_table_name() needs the real .../data/<ks>/<table>/snapshots/ shape
+        # the file has to exist on disk, under the real .../data/<ks>/<table>/snapshots/ layout
         snapshot_dir = pathlib.Path(
             self.tmp_dir.name, 'data', self.KEYSPACE, self.TABLE, 'snapshots', 'snapshot-name'
         )
@@ -317,11 +303,7 @@ class CheckAlreadyUploadedEncryptedTest(unittest.TestCase):
         self.assertEqual(already, [])
 
     def test_md5_is_not_consulted_when_checks_are_disabled(self):
-        """
-        With enable_md5_checks off, reuse rests on the size alone - so a file whose content changed
-        without changing length is reused. That matches the unencrypted path, and is worth pinning
-        because it is the default and it is not obvious.
-        """
+        # with md5 checks off, reuse rests on the size alone, as on the unencrypted path
         needs_backup, needs_reupload, already = self._check(
             self._stored(source_md5='deliberately-wrong'), enable_md5_checks=False
         )
@@ -330,11 +312,7 @@ class CheckAlreadyUploadedEncryptedTest(unittest.TestCase):
         self.assertEqual(len(already), 1)
 
     def test_a_file_backed_up_before_encryption_is_never_reused(self):
-        """
-        An entry without source_MD5 was written by an unencrypted backup. Restoring expects
-        ciphertext, so such a file has to be uploaded again rather than reused - this is what keeps
-        encrypted and unencrypted files out of the same differential chain.
-        """
+        # an entry without source_MD5 came from an unencrypted backup: restore would expect ciphertext
         needs_backup, needs_reupload, already = self._check(
             ManifestObject(self.FILENAME, self.local_size, self.local_md5)
         )
@@ -343,7 +321,7 @@ class CheckAlreadyUploadedEncryptedTest(unittest.TestCase):
         self.assertEqual(already, [])
 
     def test_without_a_key_the_unencrypted_path_still_applies(self):
-        """Non-regression: with encryption off, the decision goes back to the storage driver."""
+        # with encryption off, the decision goes back to the storage driver
         self.storage.config.key_secret_base64 = None
         self.storage.storage_driver.file_matches_storage.side_effect = None
         self.storage.storage_driver.file_matches_storage.return_value = True

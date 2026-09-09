@@ -268,11 +268,7 @@ class ConfigTest(unittest.TestCase):
 
 
 class EncryptionKeyConfigTest(unittest.TestCase):
-    """
-    The client-side encryption key protects every backup. It must not be forced into medusa.ini,
-    which configuration management usually templates and which is often readable more widely than
-    the key deserves.
-    """
+    # the key must not have to live in medusa.ini
 
     ENV_VARS = ['MEDUSA_KEY_SECRET_BASE64', 'MEDUSA_KEY_SECRET_FILE']
 

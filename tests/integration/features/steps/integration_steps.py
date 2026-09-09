@@ -77,8 +77,7 @@ from medusa.utils import MedusaTempFile
 
 TRUNK_VERSION = 'github:apache/trunk'
 
-# Configurations backed by the local storage provider, which have no bucket to create and no
-# server-side encryption to check.
+# configurations backed by the local storage provider: no bucket to create, no SSE to check
 LOCAL_STORAGE_CONFIGS = ('local',)
 
 storage_prefix = "{}-{}".format(datetime.datetime.now().isoformat(), str(uuid.uuid4()))
@@ -737,16 +736,8 @@ def create_storage_specific_resources(storage_provider, config=None):
 
 def create_minio_bucket(config):
     """
-    Create the bucket the MinIO configuration points at, if it is not there yet.
-
-    MinIO runs locally for the integration tests, so unlike the cloud backends nothing else creates
-    its buckets. The plaintext and the client-side encryption configurations deliberately use
-    different buckets, and a config pointing at a bucket nobody creates fails in a particularly
-    unhelpful way - the S3 client retries until the whole run times out. Creating it here keeps the
-    suite runnable with nothing but a running MinIO.
-
-    Only MinIO: the cloud backends run against real accounts, where creating buckets on the fly
-    would be presumptuous at best.
+    Create the bucket a MinIO configuration points at: nothing else does, and a missing bucket
+    makes the S3 client retry until the run times out. MinIO only, never a cloud account.
     """
     bucket_name = config.storage.bucket_name
     with Storage(config=config.storage) as storage:
@@ -1691,8 +1682,7 @@ def _i_can_fecth_tokenmap_of_backup_named(context, backup_name):
 @then(r'the schema of the backup named "{backup_name}" was uploaded with KMS key according to "{storage_provider}"')
 def _the_schema_was_uploaded_with_kms_key_according_to_storage(context, backup_name, storage_provider):
 
-    # server-side encryption is a cloud storage concept: there is nothing to assert on the local
-    # backend, with or without client-side encryption
+    # nothing to assert about server-side encryption on the local backend
     if storage_provider in LOCAL_STORAGE_CONFIGS:
         return
 

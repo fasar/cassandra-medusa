@@ -5,7 +5,8 @@
 Medusa can encrypt the SSTables it backs up **before they leave the node**, with a key that only the
 node holds. The objects in the bucket are then ciphertext for everyone else: the storage provider,
 anyone with read access to the bucket, and anyone who obtains a copy of it. This is independent of,
-and can be combined with, the server-side encryption the provider offers (`kms_id`).
+and can be combined with, the server-side encryption S3 itself performs with a KMS key (`kms_id`,
+SSE-KMS).
 
 The cryptography is delegated to the
 [Amazon S3 Encryption Client](https://docs.aws.amazon.com/amazon-s3-encryption-client/latest/developerguide/what-is-s3-encryption-client.html)
@@ -158,8 +159,8 @@ Settings that interact with encryption:
 
 | Setting | With client-side encryption |
 |---|---|
-| `kms_id` | Allowed. The ciphertext is additionally encrypted server-side with the KMS key. |
-| `sse_c_key` | **Refused.** SSE-C needs its key on every request of a multipart upload, which the S3 Encryption Client does not guarantee, and encrypting the ciphertext a second time with a customer key adds nothing. |
+| `kms_id` (SSE-KMS) | Allowed. S3 encrypts the ciphertext a second time, server-side, with the KMS key; the two are independent. |
+| `sse_c_key` (SSE-C) | **Refused.** SSE-C needs its key on every request of a multipart upload, which the S3 Encryption Client does not guarantee, and encrypting the ciphertext a second time with a customer key adds nothing. |
 | `transfer_max_bandwidth` | Honoured for encrypted uploads and downloads, as for plaintext ones. |
 | `multipart_chunksize` | Sets the part size of encrypted multipart uploads, and with it the memory used per file in flight (about four parts). |
 | `concurrent_transfers` | The number of files encrypted and uploaded in parallel. The parts of one file are uploaded sequentially. |

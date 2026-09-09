@@ -64,16 +64,20 @@ Without it, a configured key fails at startup with a message saying how to insta
 
 ## What is stored
 
-Each encrypted object is the AES-256-GCM ciphertext of the file, 16 bytes longer than the file
-(the authentication tag), with the encryption material in the object's user metadata as written by
-the S3 Encryption Client (`x-amz-meta-x-amz-3` is the wrapped data key, `x-amz-meta-x-amz-t` the
-encryption context, `x-amz-meta-x-amz-d` the key commitment, ...). The encryption context names the
-keyring (`medusa-backup/raw-aes-key`) and carries a short fingerprint of the key, so that restoring
-with the wrong key is reported as such rather than as a corrupt object. The fingerprint reveals
-nothing about the key.
+**What the S3 Encryption Client writes.** Each encrypted object is the AES-256-GCM ciphertext of
+the file, 16 bytes longer than the file (the authentication tag). The client encrypts every object
+under its own data key, with key commitment, and stores the encryption material in the object's
+user metadata: `x-amz-meta-x-amz-3` is the wrapped data key, `x-amz-meta-x-amz-t` the encryption
+context, `x-amz-meta-x-amz-d` the key commitment, and a few more. Medusa does not touch any of
+this; it is the library's format, read back by the library on restore.
 
-The data key is wrapped with the configured key under AES-256-GCM, authenticated over the whole
-encryption context: the metadata cannot be edited without invalidating the wrap.
+**What Medusa adds.** The client only knows how to wrap data keys with AWS KMS, so Medusa provides
+the keyring that wraps them with the configured local key: AES-256-GCM, authenticated over the
+whole encryption context, so that the metadata cannot be edited without invalidating the wrap.
+Medusa also decides what the encryption context contains: the name of its keyring
+(`medusa-backup/raw-aes-key`) and a short fingerprint of the key, checked on restore so that the
+wrong key is reported as such rather than as a corrupt object. The fingerprint reveals nothing
+about the key.
 
 Objects written this way are readable only through Medusa, with the same key. They are **not**
 interoperable with the AWS Encryption SDK, nor with the S3 Encryption Client's own AES keyring in

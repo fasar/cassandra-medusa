@@ -126,7 +126,7 @@ class LocalAesKeyringTest(unittest.TestCase):
         return (keyring or self.keyring).on_encrypt(EncryptionMaterials(encryption_context={}))
 
     def decryption_materials(self, enc, context=None):
-        # what the client rebuilds from the object metadata; the wrap label is what it writes for
+        # what the S3 Encryption Client rebuilds from the object metadata; the wrap label is what it writes for
         # every keyring
         edk = enc.encrypted_data_key
         edk.key_provider_info = 'kms+context'

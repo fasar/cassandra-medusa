@@ -15,8 +15,8 @@
 
 """
 An in-memory S3 that answers a real boto3 client at the HTTP layer. It registers as a before-send
-handler, the last thing botocore runs before opening a socket, so serialization, the encryption
-client's hooks, checksums and response parsing are all real. Only what Medusa uses is implemented:
+handler, the last thing botocore runs before opening a socket, so serialization, the S3 Encryption
+Client's hooks, checksums and response parsing are all real. Only what Medusa uses is implemented:
 put/get/head/delete, list_objects_v2 and multipart uploads, with path-style URLs.
 """
 

@@ -101,7 +101,7 @@ class Storage(object):
                 'providers, not with storage_provider = {}'.format(self._config.storage_provider)
             )
         if self._config.sse_c_key:
-            # the encryption client only forwards extra args to the first multipart request, and
+            # the S3 Encryption Client only forwards extra args to the first multipart request, and
             # SSE-C needs its key on every part
             raise ValueError(
                 'sse_c_key cannot be combined with client-side encryption. Use kms_id for server-side '

@@ -11,7 +11,7 @@ The cryptography is delegated to the
 [Amazon S3 Encryption Client](https://docs.aws.amazon.com/amazon-s3-encryption-client/latest/developerguide/what-is-s3-encryption-client.html)
 for Python, the official AWS library. Each object is encrypted with its own data key under
 AES-256-GCM with key commitment, and the data key travels with the object, wrapped by the key you
-configure. That wrapping key is what makes this Medusa's own: the client only ships a KMS keyring, so
+configure. That wrapping key is what makes this Medusa's own: the S3 Encryption Client only ships a KMS keyring, so
 Medusa provides the keyring that wraps with a local AES-256 key instead.
 
 **Client-side encryption is available with the S3 storage providers only**: `s3`, the `s3_*` regions,
@@ -65,13 +65,13 @@ Without it, a configured key fails at startup with a message saying how to insta
 ## What is stored
 
 **What the S3 Encryption Client writes.** Each encrypted object is the AES-256-GCM ciphertext of
-the file, 16 bytes longer than the file (the authentication tag). The client encrypts every object
+the file, 16 bytes longer than the file (the authentication tag). The S3 Encryption Client encrypts every object
 under its own data key, with key commitment, and stores the encryption material in the object's
 user metadata: `x-amz-meta-x-amz-3` is the wrapped data key, `x-amz-meta-x-amz-t` the encryption
 context, `x-amz-meta-x-amz-d` the key commitment, and a few more. Medusa does not touch any of
-this; it is the library's format, read back by the library on restore.
+this; it is the S3 Encryption Client's format, read back by the S3 Encryption Client on restore.
 
-**What Medusa adds.** The client only knows how to wrap data keys with AWS KMS, so Medusa provides
+**What Medusa adds.** The S3 Encryption Client only knows how to wrap data keys with AWS KMS, so Medusa provides
 the keyring that wraps them with the configured local key: AES-256-GCM, authenticated over the
 whole encryption context, so that the metadata cannot be edited without invalidating the wrap.
 Medusa also decides what the encryption context contains: the name of its keyring

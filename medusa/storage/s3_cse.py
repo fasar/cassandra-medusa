@@ -15,8 +15,9 @@
 
 """
 Client-side encryption of S3 objects with the Amazon S3 Encryption Client and a local AES key.
-The client only ships a KMS keyring: this module provides the local-key keyring, the plaintext
-MD5 differential backups need, and the bandwidth limiting the client does not offer.
+The S3 Encryption Client only ships a KMS keyring: this module provides the local-key keyring, the
+plaintext MD5 differential backups need, and the bandwidth limiting the S3 Encryption Client does
+not offer.
 """
 
 import base64
@@ -42,10 +43,10 @@ except ImportError:
     S3Keyring = object
 
     class S3EncryptionClientError(Exception):
-        """stand-in so that callers can name the client's errors without the client installed"""
+        """stand-in so that callers can name the S3 Encryption Client's errors without it installed"""
 
     class S3EncryptionClientSecurityError(Exception):
-        """stand-in so that callers can name the client's errors without the client installed"""
+        """stand-in so that callers can name the S3 Encryption Client's errors without it installed"""
 
 
 class WrongKeyError(S3EncryptionClientError):
@@ -60,8 +61,8 @@ class PlaintextObjectExistsError(Exception):
     """An encrypted upload would overwrite a plaintext object that earlier backups still reference."""
 
 
-# the metadata entry the client stores the wrapped data key under: what tells an encrypted object
-# from a plaintext one
+# the metadata entry the S3 Encryption Client stores the wrapped data key under: what tells an
+# encrypted object from a plaintext one
 ENCRYPTED_OBJECT_METADATA = 'x-amz-3'
 
 
@@ -81,12 +82,13 @@ CONTEXT_KEY_FINGERPRINT = 'medusa:key-fingerprint'
 FINGERPRINT_LENGTH = 8
 KEY_PROVIDER_ID = b'S3Keyring'
 WRAP_ALGORITHM = 'AES/GCM'
-# the client labels every wrapped key "kms+context" whatever the keyring; accept both labels
+# the S3 Encryption Client labels every wrapped key "kms+context" whatever the keyring; accept both
 ACCEPTED_WRAP_ALGORITHMS = (WRAP_ALGORITHM, 'kms+context')
 NONCE_LENGTH = 12
 TAG_LENGTH = 16
 
-# AES-GCM limit for one key/nonce pair, which the client uses for a whole object and does not check
+# AES-GCM limit for one key/nonce pair: the S3 Encryption Client uses one pair per object and does not
+# check it
 MAX_OBJECT_SIZE = (2 ** 39 - 256) // 8
 
 # one read() is one HTTP read plus one AES-GCM update, so keep them large
@@ -210,9 +212,9 @@ class LocalAesKeyring(S3Keyring):
 
 class HashingReader:
     """
-    Read-through wrapper that computes the MD5 and size of what is read. The client only reports
-    the ciphertext, and differential backups compare local files to the plaintext MD5, base64 like
-    the other MD5s in the manifest.
+    Read-through wrapper that computes the MD5 and size of what is read. The S3 Encryption Client
+    only reports the ciphertext, and differential backups compare local files to the plaintext MD5,
+    base64 like the other MD5s in the manifest.
     """
 
     def __init__(self, fileobj):
@@ -275,8 +277,8 @@ class _LimitUploadBandwidth:
 def build_encryption_client(s3_client, key_bytes: bytes, bandwidth_limiter: BandwidthLimiter = None):
     """
     Wrap a boto3 client so that put_object/upload_fileobj encrypt and get_object decrypts.
-    The wrapper registers handlers on the client, so give it a client of its own. Delayed
-    authentication is what makes get_object stream; the tag is checked on the last read.
+    The S3 Encryption Client registers handlers on the boto3 client, so give it one of its own.
+    Delayed authentication is what makes get_object stream; the tag is checked on the last read.
     """
     require_s3ec()
     keyring = LocalAesKeyring(key_bytes)

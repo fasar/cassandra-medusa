@@ -167,7 +167,7 @@ class S3BaseStorage(AbstractStorage):
         self.s3_client = self._make_boto_client(boto_config)
 
         if self.encryption_key is not None:
-            # the encryption client registers hooks on the boto3 client it wraps: keep a plain one
+            # the S3 Encryption Client registers hooks on the boto3 client it wraps: keep a plain one
             # for listing, head, delete and the plaintext metadata
             if self.transfer_config.max_bandwidth:
                 self.bandwidth_limiter = s3_cse.make_bandwidth_limiter(self.transfer_config.max_bandwidth)
@@ -532,7 +532,7 @@ class S3BaseStorage(AbstractStorage):
         """
         Upload one SSTable through the encrypting client. The file is opened here, in the executor,
         so that a retry restarts from the first byte with a fresh hash. Below the multipart
-        threshold the client holds the whole body in memory, as upload_file does; above it, one
+        threshold the S3 Encryption Client holds the whole body in memory, as upload_file does; above it, one
         part at a time.
         """
         self.__refuse_to_overwrite_plaintext(object_key)

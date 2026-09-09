@@ -279,8 +279,41 @@ knowing before you rely on CSE: see [What is *not* encrypted](#what-is-not-encry
 - **Disk.** No temporary file is written on either side.
 - **Storage.** 16 bytes per object, plus a few hundred bytes of metadata.
 
-Measured on a 16-core node against a local MinIO (`tests/manual/BENCHMARK.md`, §5): 0.84
-CPU-seconds per GiB of encrypted backup, about 250 MB of extra peak memory with four concurrent
-transfers and 50 MB parts, no measurable cost on restore, and under Medusa's default 50MB/s
-bandwidth cap a backup 12% longer than without encryption. `tests/manual/BENCHMARK.md` describes
-how to measure the cost on your own cluster.
+### Measured
+
+All the figures below come from the same machine, a developer laptop running the whole stack, so
+the network is a loopback and wall-clock times say what the code costs, not what a link costs:
+
+| | |
+|---|---|
+| CPU | Intel Core i7-1360P (13th gen), 12 cores, 16 threads, AES instructions |
+| RAM | 31 GB |
+| Storage | MinIO RELEASE.2025-09-07 on `127.0.0.1:9000`, on an overlay filesystem backed by SSD |
+| Cassandra | 4.1.9, one node under CCM, JDK 11 |
+| Medusa | this branch, Python 3.11, `concurrent_transfers = 4`, `multipart_chunksize = 50MB` unless stated, no bandwidth limit unless stated |
+| Measure | `/usr/bin/time -v` around each `medusa` command: wall clock, CPU, and peak resident memory of the process |
+
+**Cost of encryption** (`tests/manual/BENCHMARK.md`, §5), 743 MB dataset, median of 3 runs:
+0.84 CPU-seconds per GiB of encrypted backup, about 250 MB of extra peak memory, no measurable
+cost on restore, and under Medusa's default 50MB/s bandwidth cap a backup 12% longer than without
+encryption.
+
+**Large SSTables and memory** (`tests/manual/LARGE-SSTABLES.md`), SSTables produced by leveled
+compaction at a chosen size, every restored component compared byte for byte with the original:
+
+| SSTables | Configuration | Backup | Peak memory, backup | Restore | Peak memory, restore |
+|---|---|---|---|---|---|
+| 3 × ~300 MB (873 MB) | plaintext | 6.2 s | 122 MB | 15.4 s | 118 MB |
+| | encrypted | 10.9 s | **414 MB** | 16.1 s | 130 MB |
+| 722 MB + 1024 MB | plaintext | 8.5 s | 123 MB | 16.3 s | 118 MB |
+| | encrypted | 17.0 s | **503 MB** | 17.6 s | 128 MB |
+| 722 MB + 1024 MB | encrypted, `multipart_chunksize = 16MB` | 15.6 s | **261 MB** | 17.5 s | 129 MB |
+
+The memory of an encrypted backup does not follow the size of the SSTables: the largest file grew
+from 300 MB to 1 GB and the peak went from 414 MB to 503 MB. It follows the number of large files
+uploaded at once and the part size, about `4 × multipart_chunksize` per file in flight, so at most
+`concurrent_transfers × 4 × multipart_chunksize` (800 MB with the defaults). `multipart_chunksize`
+is the lever: 16 MB parts halve the peak without slowing the backup down. Restore stays around
+130 MB whatever the size, as decryption streams by blocks of 1 MiB.
+
+Both protocols are in `tests/manual/` and can be rerun on your own cluster.

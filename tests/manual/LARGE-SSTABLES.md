@@ -38,9 +38,11 @@ Memory is the **maximum resident set size** of the `medusa` process as reported 
 
 ## 3. Results — 2026-09-09
 
-Branch `boto3_cse` at the commit that adds this protocol, Cassandra 4.1.9, MinIO on 127.0.0.1:9000,
-16 cores, 31 GB RAM. All three runs **PASS**: every object had the expected size and metadata,
-every component came back identical, every sampled row read back.
+Branch `boto3_cse` at the commit that adds this protocol. Machine: Intel Core i7-1360P (13th gen,
+12 cores, 16 threads, AES instructions), 31 GB RAM, SSD under an overlay filesystem, Linux 6.8;
+Cassandra 4.1.9 on one CCM node with JDK 11; MinIO RELEASE.2025-09-07 on 127.0.0.1:9000; Medusa on
+Python 3.11. All three runs **PASS**: every object had the expected size and metadata, every
+component came back identical, every sampled row read back.
 
 ### 300 MB SSTables — 4 000 000 rows, 3 `Data.db` of 273, 300 and 300 MB, 873 MB in 24 components
 
